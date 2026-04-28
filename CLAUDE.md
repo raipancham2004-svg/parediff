@@ -1,4 +1,4 @@
-# PareDiff — Routability-Aware Diffusion for Cross-Technology Macro Placement
+# PareDiff — Pareto-Aware Diffusion for Routability-Driven VLSI Macro Placement
 
 **Status:** Active research project. Targeting Q1 publication (IEEE TCAD / TVLSI).
 **Owner of architecture + code + paper:** Claude (taking the wheel).
