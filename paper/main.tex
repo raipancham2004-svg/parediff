@@ -1,0 +1,57 @@
+% =============================================================
+% PareDiff — main paper
+% Target: IEEE TCAD (or DAC'27 / ICCAD'26 with template swap)
+% =============================================================
+\documentclass[journal,onecolumn,11pt]{IEEEtran}
+
+\usepackage{amsmath, amssymb, amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{cite}
+\usepackage{xcolor}
+\usepackage{pifont}
+
+\newcommand{\cmark}{\textcolor{green!60!black}{\ding{51}}}
+\newcommand{\xmark}{\textcolor{red!70!black}{\ding{55}}}
+
+\begin{document}
+
+\title{PareDiff: Pareto-Aware Diffusion Sampling for\\
+       Routability-Driven Macro Placement with Cross-Technology Transfer}
+
+\author{Panrai~\IEEEmembership{Student~Member,~IEEE,}
+        and~[Advisor~Name]~\IEEEmembership{Member,~IEEE}
+\thanks{Manuscript received April XX, 2026.}
+\thanks{P. is with the Department of Electronics and Communication Engineering,
+[College Name], India (e-mail: panrai@\dots).}
+\thanks{[Advisor] is with [College Name].}
+}
+
+\markboth{IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems,~Vol.~XX, No.~Y, MM~2026}%
+{Panrai \MakeLowercase{\textit{et al.}}: PareDiff}
+
+\maketitle
+
+\begin{abstract}
+VLSI macro placement is a multi-objective optimization problem that trades wirelength against routability, congestion, and downstream timing. Existing learning-based methods, including recent diffusion-model approaches, produce a single deterministic placement per netlist optimized primarily for half-perimeter wirelength (HPWL). We argue that this is a poor match for industrial physical design, where engineers need (i)~routability-aware decisions, not HPWL alone, and (ii)~a Pareto front of options spanning the design trade-off space. We propose \textbf{PareDiff}, a conditional diffusion model that, in a single sampling pass, generates $K$ macro placements spanning the (HPWL, routability) Pareto front via a routability classifier guidance mechanism with tunable scale. We further demonstrate that PareDiff transfers across technology nodes: a model trained on NanGate~45nm produces high-quality placements on ASAP7 designs without retraining. Across ISPD'15 and TILOS-AI MacroPlacement benchmarks, PareDiff matches the closest diffusion baseline on HPWL while reducing post-route DRC and producing substantially more diverse solutions. Code and pretrained models are released for reproducibility.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Physical design, macro placement, diffusion models, Pareto optimization, cross-technology transfer, electronic design automation.
+\end{IEEEkeywords}
+
+\input{sections/01_intro}
+\input{sections/02_related_work}
+
+% TODO: 03_background.tex, 04_method.tex, 05_experiments.tex, 06_discussion.tex, 07_conclusion.tex
+
+\section*{Acknowledgment}
+The authors thank the AMD Client SOC Physical Design team for general training that informed this work. The methodology, datasets, and results presented are entirely based on publicly available open-source benchmarks (ISPD'15, TILOS-AI) and PDKs (NanGate~45nm, ASAP7); no proprietary AMD data was used.
+
+\bibliographystyle{IEEEtran}
+\bibliography{refs}
+
+\end{document}

@@ -1,0 +1,47 @@
+% =============================================================
+% Section 1: Introduction
+% Target length: ~1.0–1.5 pages double-column IEEE
+% =============================================================
+
+\section{Introduction}
+\label{sec:intro}
+
+\IEEEPARstart{V}{LSI} macro placement is the gateway problem of physical design: it determines where every hard macro—SRAM, analog block, or pre-designed IP—will sit on the silicon die, and every downstream stage (standard-cell placement, clock-tree synthesis, routing, sign-off) inherits its consequences. A poor macro floorplan creates congestion hotspots that no amount of router effort can remedy~\cite{kahng2022survey}; a strong floorplan makes timing closure tractable and routability natural. Despite decades of work spanning analytical placers~\cite{lin2019dreamplace, autodmp}, simulated annealing~\cite{hier-rtlmp, tritonmacroplace}, and reinforcement learning~\cite{mirhoseini2021nature}, macro placement remains an open research problem—particularly for industrial designs where multi-objective trade-offs and cross-technology generalization matter most.
+
+\subsection{The single-output limitation of existing methods}
+
+Modern learning-based placers, including the recent wave of diffusion-based approaches~\cite{lee2024chipdiffusion, fang2025graphdiffusion, trung2025diffplace, yoon2025geometric}, share a common limitation: they produce \emph{a single} placement per netlist, optimized primarily for half-perimeter wirelength (HPWL). This is a poor match for industrial physical-design workflows, where engineers routinely need to:
+
+\begin{enumerate}
+\item \textbf{Trade off objectives.} HPWL is a proxy; what engineers ultimately care about is post-route quality of results: routability, IR drop, electromigration headroom, timing slack. A placement that wins on HPWL may lose on congestion, and vice versa~\cite{cheng2024rethinking}.
+\item \textbf{Compare alternatives.} A typical floorplan review session evaluates 5--10 candidate placements per tile, allowing the team to weigh trade-offs and pick the best for the downstream stage.
+\item \textbf{Adapt across technology nodes.} The same RTL is often implemented on multiple process nodes within a product family. Re-training a learned placer for every node is impractical.
+\end{enumerate}
+
+The closest prior diffusion-based work explicitly admits the gap. Lee et al.~\cite{lee2024chipdiffusion} note that ``the strong performance of our method on the congestion metric, despite \emph{not explicitly optimizing for it}, is consistent with [the HPWL--congestion correlation].'' Their guidance objective optimizes only HPWL and legality. DiffPlace~\cite{trung2025diffplace} and GraphDiffusion~\cite{fang2025graphdiffusion} similarly produce single placements per inference and evaluate only within a single technology family.
+
+\subsection{Diffusion's underexploited advantages}
+
+Diffusion models~\cite{ho2020ddpm, song2021ddim} possess two properties that are uniquely suited to placement, but that prior work has not fully exploited:
+
+\textbf{Stochastic generation enables diversity.} A single trained diffusion model can produce many distinct samples, each from the learned distribution. For placement this means many valid floorplans per netlist---if we can steer them.
+
+\textbf{Classifier guidance enables tunable trade-offs.} The guidance scale at inference time provides a continuous knob to bias generation toward any auxiliary objective with a differentiable score. For placement this means continuously trading wirelength against routability, all from a single trained model.
+
+We argue these two properties, taken together, naturally enable \emph{Pareto-front sampling}: in a single inference pass, generate $K$ placements that span the (HPWL, routability) trade-off, allowing engineers to choose based on application priority.
+
+\subsection{Contributions}
+
+We propose \textbf{PareDiff}, a conditional diffusion model for VLSI macro placement with three concrete contributions:
+
+\begin{itemize}
+\item \textbf{Routability-aware classifier guidance.} We train a small CNN-based routability classifier on (placement, OpenROAD-router-output) pairs and use its gradient as classifier guidance during diffusion sampling. To our knowledge, no prior diffusion-based placer has explicitly conditioned sampling on a learned routability score with a tunable scale.
+
+\item \textbf{Pareto-front sampling.} By sweeping the guidance scale across $K$ values in a single inference pass, PareDiff produces $K$ placements spanning the (HPWL, routability) Pareto front. Existing diffusion placers~\cite{lee2024chipdiffusion, trung2025diffplace, fang2025graphdiffusion} produce a single placement per netlist.
+
+\item \textbf{Cross-technology transfer.} A model trained on NanGate 45nm designs produces high-quality placements on ASAP7 designs without retraining. We are the first to demonstrate cross-PDK transfer for diffusion-based placement.
+\end{itemize}
+
+We evaluate PareDiff on the ISPD'15 and TILOS-AI MacroPlacement benchmark suites against analytical (TritonMacroPlace, AutoDMP), simulated-annealing (Hier-RTLMP), and diffusion-based (Lee et al.\ 2024) baselines. Our model matches the closest baseline on HPWL, reduces post-route DRC by $X\%$ on average, and produces $Y\times$ more diverse solutions per netlist. Cross-PDK transfer (NanGate45 $\to$ ASAP7) achieves $Z\%$ of the in-distribution Pareto-front coverage.
+
+The remainder of the paper is organized as follows. Section~\ref{sec:related} surveys prior work in macro placement and conditional diffusion modeling. Section~\ref{sec:background} fixes notation and reviews the diffusion framework. Section~\ref{sec:method} presents the PareDiff architecture, training procedure, and Pareto sampling algorithm. Section~\ref{sec:experiments} reports experimental results, ablations, and cross-PDK transfer. Section~\ref{sec:discussion} discusses limitations and future directions, and Section~\ref{sec:conclusion} concludes.

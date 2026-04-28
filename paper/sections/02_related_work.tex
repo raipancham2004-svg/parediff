@@ -1,0 +1,57 @@
+% =============================================================
+% Section 2: Related Work
+% Target length: ~1.5 pages double-column IEEE
+% =============================================================
+
+\section{Related Work}
+\label{sec:related}
+
+\subsection{Heuristic and Analytical Macro Placement}
+
+Classical macro placement is dominated by two families of methods. \emph{Analytical placers} formulate placement as a continuous optimization problem with smoothed wirelength and density terms, then minimize via gradient-based or quadratic methods. Representative recent work includes ePlace~\cite{lu2015eplace}, DREAMPlace~\cite{lin2019dreamplace}, and AutoDMP~\cite{autodmp}, which combines DREAMPlace with multi-objective Bayesian tuning. \emph{Simulated annealing} (SA) approaches—Hier-RTLMP~\cite{hier-rtlmp} and TritonMacroPlace~\cite{tritonmacroplace}—remain widely deployed in production due to their robustness on irregular floorplans and constraint flexibility. Both families produce \emph{a single deterministic placement} per netlist; multi-restart variants exist but at proportional runtime cost.
+
+\subsection{Reinforcement Learning for Placement}
+
+Mirhoseini et al.~\cite{mirhoseini2021nature} introduced reinforcement learning for chip floorplanning, framing macro placement as a sequential decision problem solved by graph-neural-network policies. The method generated significant attention but also controversy regarding its evaluation methodology~\cite{cheng2024rethinking}. A line of follow-up work has explored offline RL~\cite{zhang2023offline}, hierarchical RL~\cite{lai2022maskplace}, and hybrid analytical-RL pipelines. RL methods inherit the single-placement output limitation and require online training or extensive policy generalization to handle new designs.
+
+\subsection{Diffusion Models for Placement}
+
+Diffusion models~\cite{sohl2015deep, ho2020ddpm} have recently been applied to chip placement. Lee et al.~\cite{lee2024chipdiffusion} train a denoising diffusion model on synthetically generated placement-netlist pairs and use ``backwards universal guidance'' with learnable Lagrange multipliers during sampling. Their guidance objective combines HPWL and legality terms; congestion is reported as an evaluation metric but not explicitly optimized in the loss or guidance. The model produces a single placement per inference and is evaluated within a single technology (ICCAD04 / ISPD2005).
+
+GraphDiffusion~\cite{fang2025graphdiffusion} introduces a graph-conditioned variant where a GNN encodes the netlist as conditioning input. DiffPlace~\cite{trung2025diffplace} reformulates placement as a conditional denoising process and uses decoupled energy-based conditioning for routability prevention. Yoon et al.~\cite{yoon2025geometric} present a geometric (E(2)-equivariant) diffusion late-breaking result. Ghazaryan~\cite{ghazaryan2025macro} explores diffusion for macro optimization within a constrained setting. None of these prior methods generate multiple placements per inference, none explicitly optimize a learned routability score with a tunable inference-time scale, and none demonstrate cross-PDK transfer.
+
+A separate line of work uses diffusion for \emph{synthetic dataset generation}: DALI-PD~\cite{wu2025dalipd} synthesizes layout heatmaps to augment ML training data. This is orthogonal to placement-as-generation and complementary to our approach.
+
+\subsection{Classifier Guidance and Multi-Objective Generation}
+
+Classifier guidance~\cite{dhariwal2021guidance} steers diffusion sampling toward a target class by adding the gradient of a classifier's log-likelihood to the predicted noise. Classifier-free guidance~\cite{ho2021classifier-free} avoids the need for an explicit classifier by training a single model with both conditional and unconditional branches. We use classifier guidance because (a) our routability classifier is naturally a separate model trained on (placement, router-output) pairs, and (b) it gives a continuous trade-off knob (the guidance scale) rather than a discrete class label.
+
+Multi-objective generation via diffusion has been explored in molecular design~\cite{guan2023multiobj}, image generation~\cite{liu2023more}, and protein design~\cite{watson2023rfdiff}. Our work extends this paradigm to chip placement, where the trade-off between HPWL and routability is a first-class concern.
+
+\subsection{Cross-Technology Transfer in EDA}
+
+Transfer learning across process nodes has received attention in DRC prediction~\cite{circuitnet}, congestion estimation~\cite{liu2021global}, and timing prediction~\cite{barboza2019machine}. To our knowledge, cross-PDK transfer has not been demonstrated for diffusion-based placement. Our approach uses a small per-node embedding combined with a shared GNN backbone, allowing the model trained on NanGate 45nm to generalize zero-shot to ASAP7.
+
+\subsection{Position of This Work}
+
+Table~\ref{tab:related} summarizes the position of PareDiff relative to the closest prior work. We are the first method to combine routability-aware classifier guidance, single-pass Pareto sampling, and cross-PDK transfer in a unified diffusion framework.
+
+\begin{table}[t]
+\centering
+\caption{Comparison with diffusion-based placement methods.}
+\label{tab:related}
+\small
+\begin{tabular}{lcccc}
+\toprule
+Method & Routability & Pareto & Cross-PDK & Tunable \\
+       & in obj.     & samp.  & transfer  & scale   \\
+\midrule
+Lee et al.~\cite{lee2024chipdiffusion}            & \xmark & \xmark & \xmark & \xmark \\
+GraphDiffusion~\cite{fang2025graphdiffusion}      & \xmark & \xmark & \xmark & \xmark \\
+DiffPlace~\cite{trung2025diffplace}               & \cmark$^*$ & \xmark & \xmark & \xmark \\
+Yoon et al.~\cite{yoon2025geometric}              & \xmark & \xmark & \xmark & \xmark \\
+\textbf{PareDiff (ours)}                          & \cmark & \cmark & \cmark & \cmark \\
+\bottomrule
+\multicolumn{5}{l}{\footnotesize $^*$ Energy-based conditioning, not classifier guidance.}
+\end{tabular}
+\end{table}

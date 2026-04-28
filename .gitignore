@@ -1,0 +1,61 @@
+# Data + checkpoints (large, downloaded separately)
+data/
+experiments/checkpoints/
+experiments/sampled_placements/
+*.nlib
+*.def.gz
+*.v.gz
+*.oas
+*.gds
+*.pt
+*.pth
+*.ckpt
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ipynb_checkpoints/
+.coverage
+htmlcov/
+
+# Conda / venv
+env/
+venv/
+.env
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# wandb
+wandb/
+
+# LaTeX intermediates
+paper/*.aux
+paper/*.bbl
+paper/*.blg
+paper/*.log
+paper/*.out
+paper/*.toc
+paper/*.synctex.gz
+paper/*.fls
+paper/*.fdb_latexmk
+paper/sections/*.aux
+
+# AMD farm-only paths
+sync_last_known_as_good.log
