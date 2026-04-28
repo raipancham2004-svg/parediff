@@ -57,7 +57,27 @@ def parse_args():
     p.add_argument('--use_wandb', action='store_true')
     p.add_argument('--resume', type=str, default=None,
                    help='Resume from checkpoint path')
+    p.add_argument('--hf_repo', type=str, default=None,
+                   help='If set, push checkpoints to this HF Hub repo every --hf_push_every epochs')
+    p.add_argument('--hf_push_every', type=int, default=10,
+                   help='Push to HF Hub every N epochs (only if --hf_repo set)')
     return p.parse_args()
+
+
+def push_to_hf(ckpt_dir, hf_repo):
+    """Push the entire ckpt dir to HF Hub. Idempotent."""
+    try:
+        from huggingface_hub import HfApi, create_repo
+        api = HfApi()
+        create_repo(hf_repo, repo_type='model', exist_ok=True, private=True)
+        api.upload_folder(
+            folder_path=str(ckpt_dir),
+            repo_id=hf_repo,
+            repo_type='model',
+        )
+        print(f"  ✓ Pushed checkpoints to https://huggingface.co/{hf_repo}")
+    except Exception as e:
+        print(f"  ⚠ HF push failed: {e}")
 
 
 def main():
@@ -197,9 +217,17 @@ def main():
             }, ckpt_path)
             print(f"  ✓ saved {ckpt_path}")
 
+        if args.hf_repo and (epoch + 1) % args.hf_push_every == 0:
+            push_to_hf(ckpt_dir, args.hf_repo)
+
     final = ckpt_dir / 'parediff_final.pt'
     torch.save({'model': model.state_dict(), 'cfg': cfg}, final)
     print(f"\nTraining done. Final ckpt: {final}")
+
+    # Final push regardless
+    if args.hf_repo:
+        push_to_hf(ckpt_dir, args.hf_repo)
+
     if cfg.use_wandb:
         import wandb
         wandb.finish()
