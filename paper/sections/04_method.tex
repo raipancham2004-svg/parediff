@@ -1,0 +1,107 @@
+% =============================================================
+% Section 4: Method — PareDiff
+% Target length: ~3.0 pages double-column IEEE
+% =============================================================
+
+\section{Method: PareDiff}
+\label{sec:method}
+
+This section presents the PareDiff architecture (Section~\ref{ssec:arch}), training procedure (Section~\ref{ssec:training}), routability classifier (Section~\ref{ssec:routability}), Pareto-front sampling algorithm (Section~\ref{ssec:pareto}), and cross-technology transfer mechanism (Section~\ref{ssec:cross_pdk}).
+
+\subsection{Architecture}
+\label{ssec:arch}
+
+PareDiff has three main components, illustrated in Fig.~\ref{fig:arch}:
+\begin{enumerate}
+\item A \textbf{netlist GNN encoder} $f_\textrm{GNN}: G \to \mathbb{R}^{|V| \times d}$ that produces a per-macro context embedding $c_i$ from the input netlist.
+\item A \textbf{denoising network} $\epsilon_\theta(x_t, o_t, t, c)$ that predicts the noise on coordinates $x_t$ and the clean class distribution over orientations $o_t$, conditioned on timestep $t$ and per-macro context $c$.
+\item A \textbf{routability classifier} $R_\phi: \mathcal{X} \times G \to [0, 1]$ trained separately to predict normalized routing-overflow ratio.
+\end{enumerate}
+
+\begin{figure}[t]
+\centering
+% \includegraphics[width=\linewidth]{figures/architecture.pdf}
+\fbox{\parbox{0.95\linewidth}{\centering\textit{[Figure~\ref{fig:arch}: PareDiff architecture --- placeholder]}\\
+\textit{Netlist $G \to$ GNN $\to$ per-macro $c_i$;\\
+Coords $x_t$ + Orient $o_t$ $\to$ Transformer denoiser $\to \hat\epsilon, \hat o_0$;\\
+Routability classifier provides $\nabla R_\phi$ for guidance.}}}
+\caption{PareDiff architecture overview. The netlist GNN encodes structural connectivity into per-macro context. The denoising transformer takes the noisy placement, timestep, and context to predict noise on coordinates and the clean orientation logits. During sampling, gradients from a separately trained routability classifier are added at each denoising step, with a tunable scale $s$ controlling the (HPWL, routability) trade-off.}
+\label{fig:arch}
+\end{figure}
+
+\paragraph{Netlist GNN encoder.}
+The encoder $f_\textrm{GNN}$ adopts a GraphGPS-style alternation of local (GIN~\cite{xu2018gin}) and global (multi-head self-attention~\cite{vaswani2017attention}) layers. Macro nodes carry features $(w_i / W,\ h_i / H,\ p_i)$ where $p_i$ is the macro's pin count. Hyperedges are expanded into pairwise edges weighted by $1/|e|$ to avoid overweighting high-fanout nets. Empirically, four GraphGPS layers with hidden dimension $d=128$ suffice for ISPD'15-scale netlists; we ablate this choice in Section~\ref{ssec:ablation}.
+
+\paragraph{Denoising network.}
+Coordinates and orientations are denoised jointly. Coordinates use ordinary Gaussian DDPM (Section~\ref{sec:background}); orientations are treated as a categorical variable with a soft mixing forward process inspired by DiGress~\cite{vignac2023digress}: $o_t = (1-\gamma_t)\, o_0 + \gamma_t\, \mathbf{u}$ where $\mathbf{u}$ is uniform over $\Theta$ and $\gamma_t = 1 - \sqrt{\bar{\alpha}_t}$ matches the Gaussian noise schedule. The denoiser predicts (i) the Gaussian noise $\hat\epsilon$ on coordinates and (ii) class logits over $\Theta$ for the clean orientation, trained with MSE and cross-entropy respectively.
+
+The denoising transformer treats macros as a permutation-invariant set of length $|V|$. Per-macro inputs $(x_t^{(i)}, o_t^{(i)})$ are linearly projected and added to the GNN context $c_i$ and a sinusoidal timestep embedding. Six transformer encoder layers with hidden dimension $D=256$ and 8 heads follow.
+
+\subsection{Training}
+\label{ssec:training}
+
+PareDiff is trained in two stages.
+
+\paragraph{Stage 1: Diffusion model.}
+Given a dataset of $N$ designs $\{(G^{(n)}, X^{(n)}_0)\}_{n=1}^N$ where $X^{(n)}_0$ is an expert (analytical or SA-based) placement, we minimize:
+\begin{equation}
+\mathcal{L}(\theta) = \mathbb{E}_{n, t, \epsilon}\left[ \|\epsilon - \hat\epsilon\|^2 + \lambda_o\, \textrm{CE}(\hat{o}_0, o^{(n)}_0) \right] + \lambda_a\, \mathcal{L}_\textrm{aux},
+\label{eq:total_loss}
+\end{equation}
+where the auxiliary loss $\mathcal{L}_\textrm{aux}$ regularizes the predicted clean placement $\hat{x}_0$ (computed via Tweedie's identity) against soft constraint penalties:
+\begin{equation}
+\mathcal{L}_\textrm{aux} = \lambda_b\, \textrm{Boundary}(\hat{x}_0) + \lambda_v\, \textrm{Overlap}(\hat{x}_0).
+\end{equation}
+The boundary term penalizes macros lying outside $[0, W] \times [0, H]$; the overlap term sums pairwise intersection areas (both differentiable, see Appendix~\ref{app:loss}). We use $\lambda_o = 0.1, \lambda_a = 0.5, \lambda_b = 0.5, \lambda_v = 0.5$ throughout.
+
+The diffusion model is trained with AdamW ($\eta = 10^{-4}$) for 200 epochs with a cosine learning rate schedule. We use a batch size of 1 design (designs are large) with gradient accumulation over 4 designs. Mixed-precision training is enabled.
+
+\paragraph{Stage 2: Routability classifier.}
+The routability classifier $R_\phi$ is trained \emph{separately} on a curated dataset of $(X, R)$ pairs, where $X$ is a placement and $R$ is the normalized post-route DRC count obtained from OpenROAD on the placement. For Stage 2 we use the diffusion model itself to generate diverse placements (sweeping $s = 0$, i.e., unguided), then run OpenROAD on each to label them. This bootstrapping approach yields ~5,000 labeled (placement, routability) pairs with no manual intervention.
+
+The classifier itself is a small ResNet-style CNN (~10M params) that takes a $4 \times R \times R$ rendered image of the placement (channels: cell density, macro indicator, pin density, net demand) and outputs a sigmoid score in $[0, 1]$. Training uses MSE loss against the OpenROAD label. We render at $R = 64$ for the differentiable splat used in guidance and at $R = 256$ for evaluation.
+
+\subsection{Routability Classifier Details}
+\label{ssec:routability}
+
+Two rendering modes coexist:
+
+\textbf{Hard rendering} (training and evaluation): pixel-perfect rasterization of macros and net bounding boxes onto the multi-channel image. Used for Stage~2 training.
+
+\textbf{Soft rendering} (guidance during sampling): Gaussian splatting around each macro center with bandwidth set by macro size. This is differentiable end-to-end, allowing $\nabla_{x_t} R_\phi$ to be computed by autograd. Although less accurate, the soft renderer's local gradients still reliably push samples away from congested arrangements—a property we verify in Section~\ref{ssec:ablation}.
+
+\subsection{Pareto-Front Sampling}
+\label{ssec:pareto}
+
+Algorithm~\ref{alg:pareto} formalizes single-pass Pareto sampling. The user specifies $K$ (the number of placements to generate) and a guidance-scale range $[s_\textrm{min}, s_\textrm{max}]$. The algorithm runs $K$ DDIM trajectories in parallel (or sequentially on memory-constrained GPUs), with each trajectory using a distinct guidance scale linearly spaced over the range. Independent random noise per trajectory ensures sample diversity even at identical guidance scales.
+
+\begin{algorithm}[t]
+\caption{PareDiff Pareto-Front Sampling}
+\label{alg:pareto}
+\begin{algorithmic}[1]
+\REQUIRE Trained model $\epsilon_\theta$, classifier $R_\phi$, netlist $G$, $K$, $[s_\textrm{min}, s_\textrm{max}]$, sample steps $S$
+\STATE $c \leftarrow f_\textrm{GNN}(G)$
+\STATE $s_k \leftarrow s_\textrm{min} + (k-1)(s_\textrm{max} - s_\textrm{min})/(K-1)$ for $k = 1, \dots, K$
+\FOR{$k = 1$ to $K$ in parallel}
+    \STATE $x_T^{(k)} \sim \mathcal{N}(0, I)$, \quad $o_T^{(k)} \sim \textrm{Uniform}(\Theta)$
+    \FOR{$t = T, T-1, \dots, 1$ (DDIM-spaced to $S$ steps)}
+        \STATE $\hat\epsilon, \hat{o}_0 \leftarrow \epsilon_\theta(x_t^{(k)}, o_t^{(k)}, t, c)$
+        \STATE $\hat{x}_0 \leftarrow (x_t^{(k)} - \sqrt{1 - \bar{\alpha}_t}\,\hat\epsilon) / \sqrt{\bar{\alpha}_t}$
+        \STATE $\hat{x}_0 \leftarrow \textrm{clamp}(\hat{x}_0, 0, 1)$ \COMMENT{soft legality projection}
+        \STATE $g \leftarrow \nabla_{x_t^{(k)}} R_\phi(\hat{x}_0)$ \COMMENT{routability gradient}
+        \STATE $\hat\epsilon \leftarrow \hat\epsilon + s_k \cdot \sqrt{1 - \bar{\alpha}_t} \cdot g$
+        \STATE $x_{t-1}^{(k)} \leftarrow$ DDIM step from $\hat\epsilon$
+        \STATE $o_{t-1}^{(k)} \leftarrow \textrm{softmax}(\hat{o}_0)$
+    \ENDFOR
+    \STATE $X^{(k)} \leftarrow (x_0^{(k)},\ \arg\max o_0^{(k)})$
+\ENDFOR
+\RETURN $\{X^{(1)}, \dots, X^{(K)}\}$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Cross-Technology Transfer}
+\label{ssec:cross_pdk}
+
+To enable a model trained on NanGate~45nm to generalize to ASAP7, we make the encoder \emph{technology-aware} via a small embedding $e_\tau \in \mathbb{R}^d$ for each technology $\tau$. The per-macro context becomes $c_i + e_\tau$. During training we mix samples from both technologies (predominantly NanGate~45nm; a small fraction of ASAP7 designs are seen during training to ground the embedding). At inference on a new ASAP7 design, we use the trained $e_\textrm{ASAP7}$ embedding directly—no retraining needed.
+
+We further normalize all coordinates and macro sizes to the unit square per design, removing absolute-scale dependence on the technology node. The combination of relative coordinates and tech embedding allows the diffusion model to learn a topology-driven placement strategy that transfers across nodes.

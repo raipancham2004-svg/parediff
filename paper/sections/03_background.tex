@@ -1,0 +1,72 @@
+% =============================================================
+% Section 3: Background and Problem Formulation
+% Target length: ~1.0 page double-column IEEE
+% =============================================================
+
+\section{Background and Problem Formulation}
+\label{sec:background}
+
+\subsection{Macro Placement Problem Definition}
+
+Let $G = (V, E)$ denote a netlist where $V$ is the set of macro instances and $E$ is the set of nets, modeled as hyperedges over $V$. Each macro $v_i \in V$ has a fixed size $s_i = (w_i, h_i) \in \mathbb{R}^2_{>0}$ given by its physical library (LEF). Let $T = (W, H) \in \mathbb{R}^2_{>0}$ denote the tile (die) boundary.
+
+A \emph{placement} $X = \{(x_i, y_i, \theta_i)\}_{i=1}^{|V|}$ assigns to each macro $v_i$ a center coordinate $(x_i, y_i) \in [0, W] \times [0, H]$ and an orientation $\theta_i \in \Theta = \{\textrm{R0}, \textrm{R90}, \textrm{R180}, \textrm{R270}, \textrm{MX}, \textrm{MY}, \textrm{MXR90}, \textrm{MYR90}\}$. A placement is \emph{legal} iff:
+\begin{enumerate}
+\item Every macro lies fully inside the tile: $\forall i$, the bounding box defined by $(x_i, y_i, s_i, \theta_i)$ is contained in $[0, W] \times [0, H]$.
+\item Macros do not overlap: $\forall i \neq j$, $\textrm{Area}(\textrm{bbox}_i \cap \textrm{bbox}_j) = 0$.
+\item Halo and keepout constraints (when specified) are respected.
+\end{enumerate}
+
+The classical objective is \emph{half-perimeter wirelength} (HPWL):
+\begin{equation}
+\textrm{HPWL}(X, G) = \sum_{e \in E} \left( \max_{v_i \in e} x_i - \min_{v_i \in e} x_i \right) + \left( \max_{v_i \in e} y_i - \min_{v_i \in e} y_i \right).
+\label{eq:hpwl}
+\end{equation}
+We additionally consider \emph{routability}, defined as the post-route violation count produced by an industrial-grade detail router (e.g.\ OpenROAD~\cite{openroad}). Throughout, we use a learned proxy $R_\phi(X, G) \in [0, 1]$ predicting normalized post-route DRC count, which avoids invoking the router at every training iteration.
+
+We seek not a single placement minimizing a scalarized objective, but rather a \emph{Pareto front} $\mathcal{P}(G) \subset \mathcal{X}$ such that for every $X \in \mathcal{P}(G)$, no $X' \in \mathcal{X}$ dominates it on both HPWL and routability.
+
+\subsection{Denoising Diffusion Probabilistic Models}
+
+Diffusion models~\cite{sohl2015deep, ho2020ddpm} learn a generative distribution $p_\theta(x_0)$ by reversing a fixed forward noising process. The forward process is a Markov chain
+\begin{equation}
+q(x_t \mid x_{t-1}) = \mathcal{N}(x_t; \sqrt{1 - \beta_t}\, x_{t-1},\ \beta_t I)
+\end{equation}
+where $\beta_1, \dots, \beta_T$ is a noise schedule. By the additive property of Gaussians, this admits a closed form:
+\begin{equation}
+q(x_t \mid x_0) = \mathcal{N}(x_t; \sqrt{\bar{\alpha}_t}\, x_0,\ (1 - \bar{\alpha}_t) I), \quad \bar{\alpha}_t = \prod_{s \le t}(1 - \beta_s).
+\end{equation}
+
+The reverse process is parameterized by a neural network $\epsilon_\theta(x_t, t)$ trained to predict the noise added at step $t$:
+\begin{equation}
+\mathcal{L}_\textrm{simple}(\theta) = \mathbb{E}_{x_0, \epsilon, t}\left[\left\|\epsilon - \epsilon_\theta(\sqrt{\bar{\alpha}_t}\, x_0 + \sqrt{1 - \bar{\alpha}_t}\, \epsilon,\ t)\right\|^2\right].
+\label{eq:ddpm_loss}
+\end{equation}
+
+For sampling, we use the deterministic DDIM~\cite{song2021ddim} accelerator with $S \ll T$ steps. For conditional generation, we condition on a context vector $c$ and train $\epsilon_\theta(x_t, t, c)$.
+
+\subsection{Classifier Guidance}
+
+Classifier guidance~\cite{dhariwal2021guidance} steers diffusion sampling toward a target by composing the unconditional score with a classifier's gradient:
+\begin{equation}
+\hat{\epsilon}_\theta(x_t, t, c) = \epsilon_\theta(x_t, t, c) - s \cdot \sqrt{1 - \bar{\alpha}_t}\, \nabla_{x_t} \log p(y \mid x_t),
+\label{eq:guidance}
+\end{equation}
+where $s \ge 0$ is the \emph{guidance scale}. The key property we exploit: $s$ is a continuous knob applied at \emph{inference time}, allowing a single trained model to span a family of conditional distributions parametrized by $s$.
+
+For PareDiff, we use a routability classifier $R_\phi(\cdot)$ in lieu of $\log p(y \mid x_t)$, treating its gradient as a signal that pushes the sample toward more-routable placements:
+\begin{equation}
+\hat{\epsilon}_\theta(x_t, t, c) = \epsilon_\theta(x_t, t, c) + s \cdot \sqrt{1 - \bar{\alpha}_t}\, \nabla_{x_t} R_\phi(\hat{x}_0(x_t)),
+\label{eq:rout_guidance}
+\end{equation}
+where $\hat{x}_0(x_t) = (x_t - \sqrt{1 - \bar{\alpha}_t}\, \epsilon_\theta) / \sqrt{\bar{\alpha}_t}$ is the predicted clean placement (Tweedie's identity~\cite{efron2011tweedie}). The sign convention treats $R_\phi$ as a \emph{utility} (lower congestion is higher utility); the gradient ascends this utility.
+
+\subsection{From Single Sample to Pareto Front}
+
+Equation~\ref{eq:rout_guidance} parametrizes a one-dimensional family of generative distributions $\{p_s\}_{s \ge 0}$. We hypothesize that as $s$ increases:
+\begin{itemize}
+\item Samples increasingly favor routability over wirelength,
+\item And the family $\{p_s\}$ traces an approximate Pareto front in the (HPWL, routability) plane.
+\end{itemize}
+
+PareDiff exploits this by sampling at $K$ guidance scales $\{s_1 < s_2 < \dots < s_K\}$ in parallel from the same trained model, yielding $K$ placements that span the trade-off. Section~\ref{sec:experiments} quantifies how well this approximates the true Pareto front via hypervolume measurements.
