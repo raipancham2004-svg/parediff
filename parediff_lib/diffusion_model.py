@@ -156,7 +156,9 @@ class PareDiff(nn.Module):
     # ------------------------------------------------------------
     @torch.no_grad()
     def sample(self, batch, guidance_fn=None, guidance_scale: float = 0.0,
-               num_steps: int | None = None):
+               num_steps: int | None = None,
+               init_noise: torch.Tensor | None = None,
+               noise_seed: int | None = None):
         """
         Generate macro placements.
 
@@ -174,8 +176,14 @@ class PareDiff(nn.Module):
 
         c = self.gnn(x, edge_index)
 
-        # Initial noise
-        x_t = torch.randn(N, 2, device=device)
+        # Initial noise — paired-noise mode (same seed = comparable Pareto points)
+        if init_noise is not None:
+            x_t = init_noise.to(device)
+        elif noise_seed is not None:
+            g = torch.Generator(device='cpu').manual_seed(noise_seed)
+            x_t = torch.randn(N, 2, generator=g).to(device)
+        else:
+            x_t = torch.randn(N, 2, device=device)
         o_t = torch.full((N, N_ORIENT), 1.0 / N_ORIENT, device=device)
 
         # Step indices (skip-step DDIM)
