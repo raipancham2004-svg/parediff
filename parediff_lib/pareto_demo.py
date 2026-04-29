@@ -130,11 +130,16 @@ def main():
         netlist_results = {'netlist_id': ti, 'seed': seed,
                            'n_macros': n_macros, 'placements': []}
 
+        # PAIRED NOISE: same starting noise across all K guidance scales
+        # → guidance scale becomes the ONLY varying factor → clean Pareto front
+        paired_noise_seed = seed * 31 + 1
+
         for k, s in enumerate(scales):
             t0 = time.time()
             coords, orient_pred = model.sample(batch, guidance_fn=guidance,
                                                guidance_scale=s,
-                                               num_steps=args.sample_steps)
+                                               num_steps=args.sample_steps,
+                                               noise_seed=paired_noise_seed)
             elapsed = time.time() - t0
 
             hp = hpwl(coords, netlist['hyperedges']).item()
