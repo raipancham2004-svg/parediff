@@ -49,10 +49,10 @@ conda activate parediff
 pip install torch torch-geometric diffusers wandb
 
 # CPU smoke test (no GPU needed)
-python -m code.test_smoke
+python -m parediff_lib.test_smoke
 
 # Full training (needs GPU; see kaggle/SETUP_KAGGLE.md for cloud option)
-python -m code.train --data data/ispd15 --epochs 200 --use_wandb
+python -m parediff_lib.train --data data/ispd15 --epochs 200 --use_wandb
 ```
 
 ## Citation
