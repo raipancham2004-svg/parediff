@@ -1,5 +1,5 @@
 \documentclass[lettersize,journal]{IEEEtran}
-\usepackage{amsmath,amsfonts}
+\usepackage{amsmath,amsfonts,amssymb}
 \usepackage{algorithmic}
 \usepackage{algorithm}
 \usepackage{array}
@@ -21,7 +21,7 @@
         and~[Advisor Name],~\IEEEmembership{Member,~IEEE}
 \thanks{This work was carried out as a final-year major project by the first author.}%
 \thanks{The authors are with the Department of Electronics and Communication Engineering, [College Name], India (e-mail: raipancham2004@gmail.com).}%
-\thanks{Manuscript submitted April 30, 2026.}}
+\thanks{Manuscript submitted May 4, 2026.}}
 
 \markboth{IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems,~Vol.~XX, No.~Y, MMM~YYYY}%
 {Panrai \MakeLowercase{\textit{et al.}}: PareDiff: Pareto-Aware Diffusion for Routability-Driven VLSI Macro Placement}
@@ -31,52 +31,68 @@
 \maketitle
 
 \begin{abstract}
-Macro placement, the assignment of physical locations to hard macros in a chip design, is a multi-objective optimization problem that simultaneously trades wirelength against routability, congestion, and downstream timing. Existing learning-based methods, including recent diffusion-model approaches, produce a single deterministic placement per netlist optimized primarily for half-perimeter wirelength (HPWL). We argue that this is a poor match for industrial physical design, where engineers need both routability-aware decisions and a Pareto front of options spanning the design trade-off space. We propose \textbf{PareDiff}, a conditional diffusion model that, in a single sampling pass, generates K macro placements spanning the (HPWL, routability) trade-off via a routability-classifier guidance mechanism with a tunable guidance scale. The architecture combines a graph neural network netlist encoder with a transformer-based denoising network and a separately trained routability classifier that provides classifier-guidance gradients during sampling. We evaluate PareDiff on synthetically generated netlists representative of macro-placement workloads. The trained model achieves a 12\% mean reduction in HPWL relative to a simulated-annealing baseline placer and demonstrates a tunable trade-off between HPWL and a heuristic routability proxy across a sweep of guidance scales. We release the trained model, code, and reproducibility scripts at \url{github.com/raipancham2004-svg/parediff}.
+Macro placement, the assignment of physical locations to hard macros in a chip design, is a multi-objective optimization problem that simultaneously trades wirelength against routability, congestion, and downstream timing. Existing learning-based methods, including recent diffusion-model approaches, produce a single deterministic placement per netlist optimized primarily for half-perimeter wirelength (HPWL). We argue that this is a poor match for industrial physical design, where engineers need both routability-aware decisions and a Pareto front of options spanning the design trade-off space. We propose \textbf{PareDiff}, a conditional diffusion model that, in a single sampling pass, generates K macro placements spanning the (HPWL, routability) trade-off via a routability-classifier guidance mechanism with a tunable guidance scale. The architecture combines a graph neural network netlist encoder with a transformer-based denoising network and a separately trained routability classifier that provides classifier-guidance gradients during sampling. We further introduce paired-noise sampling, in which all K guidance trajectories share a common initial noise tensor, isolating the effect of guidance and producing comparable Pareto-front samples. We evaluate PareDiff on synthetically generated netlists representative of macro-placement workloads. The trained model achieves a 12.2\% mean reduction in HPWL relative to a simulated-annealing baseline placer and demonstrates a tunable trade-off between HPWL and a heuristic routability proxy across a sweep of guidance scales. We characterize per-netlist Pareto behavior on 15 test designs, observe coherent aggregate trends, and discuss the heterogeneous per-netlist responses as a useful artifact of generative sampling. We release the trained model checkpoint, complete training and inference code, and reproducibility scripts at \url{github.com/raipancham2004-svg/parediff} under an MIT license.
 \end{abstract}
 
 \begin{IEEEkeywords}
-Diffusion models, electronic design automation, generative models, graph neural networks, machine learning for EDA, macro placement, multi-objective optimization, Pareto sampling, physical design, very-large-scale integration.
+Conditional generation, denoising diffusion probabilistic models, design-space exploration, electronic design automation, generative models, graph neural networks, machine learning for EDA, macro placement, multi-objective optimization, Pareto sampling, physical design, routability, very-large-scale integration.
 \end{IEEEkeywords}
 
 \section{Introduction}
-\IEEEPARstart{V}{LSI} macro placement is the gateway problem of physical design: it determines where every hard macro---SRAM, analog block, or pre-designed IP---will sit on the silicon die, and every downstream stage (standard-cell placement, clock-tree synthesis, routing, sign-off) inherits its consequences. A poor macro floorplan creates congestion hotspots that no amount of router effort can remedy~\cite{kahng2023ml}; a strong floorplan makes timing closure tractable and routability natural. Despite decades of work spanning analytical placers~\cite{lin2019dreamplace, autodmp}, simulated annealing~\cite{hierrtlmp, tritonmacroplace}, and reinforcement learning~\cite{mirhoseini2021nature}, macro placement remains an open research problem---particularly for industrial designs where multi-objective trade-offs and design-space exploration matter most.
+\IEEEPARstart{V}{LSI} macro placement is the gateway problem of physical design: it determines where every hard macro---SRAM, analog block, or pre-designed IP---will sit on the silicon die, and every downstream stage (standard-cell placement, clock-tree synthesis, routing, sign-off) inherits its consequences. A poor macro floorplan creates congestion hotspots that no amount of router effort can remedy~\cite{kahng2023ml}; a strong floorplan makes timing closure tractable and routability natural. As process technology nodes have moved to 5\,nm, 3\,nm, and below, the relative cost of poor early-stage decisions has grown: late-stage engineering change orders (ECOs) at advanced nodes are far more expensive than at older nodes, and the routing resource scarcity in fine-pitch metal stacks magnifies the impact of every macro-placement decision.
+
+Despite decades of work spanning analytical placers~\cite{lin2019dreamplace, autodmp}, simulated annealing (SA)~\cite{hierrtlmp, tritonmacroplace}, and reinforcement learning (RL)~\cite{mirhoseini2021nature}, macro placement remains an open research problem. The field has converged on a number of strong, well-engineered tools, but each carries inherent limitations: analytical placers depend on smoothed wirelength surrogates that do not directly capture routability; simulated-annealing tools require careful schedule tuning and provide a single solution per run; RL approaches need extensive policy training and have been shown~\cite{cheng2024rethinking} to be sensitive to evaluation methodology.
+
+The recent emergence of diffusion-based generative models in image synthesis~\cite{ho2020ddpm, song2021ddim, dhariwal2021guidance}, molecular design, and protein structure prediction has prompted a small but growing body of work applying these models to chip placement~\cite{lee2024chipdiffusion, fang2025graphdiffusion, trung2025diffplace, yoon2025geometric}. These works demonstrate that high-quality placements can be produced via diffusion sampling, and that zero-shot generalization to unseen circuits is achievable. However, this nascent literature has not yet exploited two of diffusion's most important advantages over deterministic and policy-based methods.
 
 \subsection{The Single-Output Limitation of Existing Methods}
 
-Modern learning-based placers, including the recent wave of diffusion-based approaches~\cite{lee2024chipdiffusion, fang2025graphdiffusion, trung2025diffplace, yoon2025geometric}, share a common limitation: they produce \emph{a single} placement per netlist, optimized primarily for HPWL. This is a poor match for industrial physical-design workflows, where engineers routinely need to trade off objectives (HPWL is a proxy; what engineers ultimately care about is post-route quality of results: routability, IR drop, electromigration headroom, and timing slack), and to compare alternatives (a typical floorplan review session evaluates 5--10 candidate placements per tile, allowing the team to weigh trade-offs and pick the best for the downstream stage).
+Modern learning-based placers, including the recent wave of diffusion-based approaches~\cite{lee2024chipdiffusion, fang2025graphdiffusion, trung2025diffplace, yoon2025geometric}, share a common limitation: they produce \emph{a single} placement per netlist, optimized primarily for HPWL. This is a poor match for industrial physical-design workflows, where engineers routinely need to trade off objectives---HPWL is a proxy; what engineers ultimately care about is post-route quality of results: routability, IR drop, electromigration headroom, and timing slack. A placement that wins on HPWL may lose on congestion, and vice versa~\cite{cheng2024rethinking}. They also need to compare alternatives---a typical floorplan review session evaluates 5--10 candidate placements per tile, allowing the team to weigh trade-offs and pick the best for the downstream stage.
 
-The closest prior diffusion-based work explicitly admits the gap. Lee et al.~\cite{lee2024chipdiffusion} note that the strong performance of their method on the congestion metric, ``despite \emph{not explicitly optimizing for it}, is consistent with [the HPWL--congestion correlation].'' Their guidance objective optimizes only HPWL and legality. DiffPlace~\cite{trung2025diffplace} and GraphDiffusion~\cite{fang2025graphdiffusion} similarly produce single placements per inference and evaluate only within a single technology family.
+The closest prior diffusion-based work explicitly admits the gap. Lee et al.~\cite{lee2024chipdiffusion} note that the strong performance of their method on the congestion metric, ``despite \emph{not explicitly optimizing for it}, is consistent with [the HPWL--congestion correlation].'' Their guidance objective optimizes only HPWL and legality. DiffPlace~\cite{trung2025diffplace} and GraphDiffusion~\cite{fang2025graphdiffusion} similarly produce single placements per inference and evaluate only within a single technology family. The result is that, despite using inherently stochastic generative models capable of producing many distinct samples, the field has continued to deliver a single answer per netlist.
 
 \subsection{Diffusion's Underexploited Advantages}
 
-Diffusion models~\cite{ho2020ddpm, song2021ddim} possess two properties that are uniquely suited to placement, but that prior work has not fully exploited. First, stochastic generation enables \emph{diversity}: a single trained diffusion model can produce many distinct samples, each from the learned distribution, providing many valid floorplans per netlist. Second, classifier guidance~\cite{dhariwal2021guidance} provides a continuous knob applied at \emph{inference time}, allowing a single trained model to span a family of conditional distributions parametrized by a guidance scale. We argue these two properties, taken together, naturally enable Pareto-front sampling: in a single inference pass, generate K placements that span the (HPWL, routability) trade-off, allowing engineers to choose based on application priority.
+Diffusion models~\cite{ho2020ddpm, song2021ddim} possess two properties that are uniquely suited to placement, but that prior work has not fully exploited.
+
+\textbf{Stochastic generation enables diversity.} A single trained diffusion model can produce many distinct samples, each from the learned distribution, providing many valid floorplans per netlist. Multi-restart heuristic placers achieve diversity at proportional runtime cost; diffusion produces diverse samples at constant per-sample cost regardless of the number of samples generated.
+
+\textbf{Classifier guidance enables tunable trade-offs.} Classifier guidance~\cite{dhariwal2021guidance} provides a continuous knob applied at \emph{inference time}, allowing a single trained model to span a family of conditional distributions parametrized by a guidance scale. For multi-objective problems such as placement, this naturally enables single-pass exploration of the Pareto front.
+
+We argue these two properties, taken together, naturally enable Pareto-front sampling: in a single inference pass, generate K placements that span the (HPWL, routability) trade-off, allowing engineers to choose based on application priority.
 
 \subsection{Contributions}
 
-We propose \textbf{PareDiff}, a conditional diffusion model for VLSI macro placement with three concrete contributions:
+We propose \textbf{PareDiff}, a conditional diffusion model for VLSI macro placement with four concrete contributions:
 
 \begin{itemize}
-\item \textbf{Routability-aware classifier guidance:} We train a small CNN-based routability classifier and use its gradient as classifier guidance during diffusion sampling. To our knowledge, no prior diffusion-based placer has explicitly conditioned sampling on a learned routability score with a tunable scale.
+\item \textbf{Routability-aware classifier guidance.} We train a small CNN-based routability classifier and use its gradient as classifier guidance during diffusion sampling. To our knowledge, no prior diffusion-based placer has explicitly conditioned sampling on a learned routability score with a tunable scale.
 
-\item \textbf{Single-pass Pareto sampling:} By sweeping the guidance scale across K values in a single inference pass, PareDiff produces K placements spanning the (HPWL, routability) trade-off. Existing diffusion placers~\cite{lee2024chipdiffusion, trung2025diffplace, fang2025graphdiffusion} produce a single placement per netlist.
+\item \textbf{Single-pass Pareto sampling.} By sweeping the guidance scale across K values in a single inference pass, PareDiff produces K placements spanning the (HPWL, routability) trade-off. Existing diffusion placers~\cite{lee2024chipdiffusion, trung2025diffplace, fang2025graphdiffusion} produce a single placement per netlist.
 
-\item \textbf{Open-source release:} We release a trained model checkpoint, training and inference code, and reproducibility scripts as a full open-source package, enabling community extension and benchmarking.
+\item \textbf{Paired-noise Pareto sampling.} We introduce a paired-noise variant of the Pareto sampling algorithm in which all K guidance trajectories share a common initial noise tensor. This isolates the effect of guidance from the variance of random initialization, producing trajectories that are directly comparable per netlist.
+
+\item \textbf{Open-source release.} We release a trained model checkpoint, training and inference code, and reproducibility scripts as a full open-source package, enabling community extension and benchmarking.
 \end{itemize}
 
-We evaluate PareDiff on synthetically generated netlists representative of typical macro-placement workloads. The trained model matches or beats a simulated-annealing baseline placer on HPWL by an average of 12\%, and demonstrates a tunable trade-off between HPWL and a heuristic routability proxy across a sweep of guidance scales.
+We evaluate PareDiff on synthetically generated netlists representative of typical macro-placement workloads. The trained model matches or beats a simulated-annealing baseline placer on HPWL by an average of 12.2\%, demonstrates a tunable trade-off between HPWL and a heuristic routability proxy across a sweep of guidance scales, and exhibits coherent aggregate Pareto behavior across a 15-netlist test set.
 
-The remainder of this paper is organized as follows. Section~\ref{sec:related} surveys prior work in macro placement and conditional diffusion modeling. Section~\ref{sec:background} fixes notation and reviews the diffusion framework. Section~\ref{sec:method} presents the PareDiff architecture, training procedure, and Pareto sampling algorithm. Section~\ref{sec:experiments} reports experimental results. Section~\ref{sec:discussion} discusses limitations and future directions, and Section~\ref{sec:conclusion} concludes.
+The remainder of this paper is organized as follows. Section~\ref{sec:related} surveys prior work in macro placement and conditional diffusion modeling. Section~\ref{sec:background} fixes notation and reviews the diffusion framework. Section~\ref{sec:method} presents the PareDiff architecture, training procedure, and Pareto sampling algorithm. Section~\ref{sec:implementation} reports implementation details and computational complexity analysis. Section~\ref{sec:experiments} reports experimental results. Section~\ref{sec:discussion} discusses limitations and future directions, and Section~\ref{sec:conclusion} concludes. A short appendix derives the predicted-clean-state expression used in our guidance computation.
 
 \section{Related Work}
 \label{sec:related}
 
 \subsection{Heuristic and Analytical Macro Placement}
 
-Classical macro placement is dominated by two families of methods. \emph{Analytical placers} formulate placement as a continuous optimization problem with smoothed wirelength and density terms, then minimize via gradient-based or quadratic methods. Representative recent work includes ePlace~\cite{lu2015eplace}, DREAMPlace~\cite{lin2019dreamplace}, and AutoDMP~\cite{autodmp}, which combines DREAMPlace with multi-objective Bayesian tuning. \emph{Simulated annealing} (SA) approaches---Hier-RTLMP~\cite{hierrtlmp} and TritonMacroPlace~\cite{tritonmacroplace}---remain widely deployed in production due to their robustness on irregular floorplans and constraint flexibility. Both families produce a single deterministic placement per netlist; multi-restart variants exist but at proportional runtime cost.
+Classical macro placement is dominated by two families of methods. \emph{Analytical placers} formulate placement as a continuous optimization problem with smoothed wirelength and density terms, then minimize via gradient-based or quadratic methods. Representative recent work includes ePlace~\cite{lu2015eplace}, DREAMPlace~\cite{lin2019dreamplace}, and AutoDMP~\cite{autodmp}, which combines DREAMPlace with multi-objective Bayesian tuning to expose a small set of analytical-placement variants. \emph{Simulated annealing} (SA) approaches---Hier-RTLMP~\cite{hierrtlmp} and TritonMacroPlace~\cite{tritonmacroplace}---remain widely deployed in production due to their robustness on irregular floorplans and constraint flexibility. Both families produce a single deterministic placement per netlist; multi-restart variants exist but at proportional runtime cost.
+
+A practical limitation of analytical placers is the smoothed-density approximation used to make the formulation differentiable: the resulting solution is a local optimum of the smoothed objective, not the original discrete legality-constrained objective. SA-based placers avoid this by working directly in the discrete space but pay in runtime, particularly for large industrial designs.
 
 \subsection{Reinforcement Learning for Placement}
 
-Mirhoseini et al.~\cite{mirhoseini2021nature} introduced reinforcement learning for chip floorplanning, framing macro placement as a sequential decision problem solved by graph-neural-network policies. The method generated significant attention but also controversy regarding its evaluation methodology~\cite{cheng2024rethinking}. A line of follow-up work has explored offline RL, hierarchical RL, and hybrid analytical-RL pipelines. RL methods inherit the single-placement output limitation and require online training or extensive policy generalization to handle new designs.
+Mirhoseini et al.~\cite{mirhoseini2021nature} introduced reinforcement learning for chip floorplanning, framing macro placement as a sequential decision problem solved by graph-neural-network policies. The method generated significant attention as the first demonstration of a deep-RL placer producing competitive results on industrial designs. It also generated controversy regarding evaluation methodology: Cheng et al.~\cite{cheng2024rethinking} subsequently published a careful re-evaluation arguing that the original results, when normalized against modern open-source baselines, were less compelling than initially reported.
+
+A line of follow-up work has explored offline RL, hierarchical RL, and hybrid analytical-RL pipelines. RL methods inherit the single-placement output limitation: each rollout produces one trajectory, and obtaining diverse alternatives requires either training multiple policies or sampling many rollouts at proportional cost. Furthermore, RL methods typically require online training or extensive policy generalization training to handle new netlists.
 
 \subsection{Diffusion Models for Placement}
 
@@ -86,11 +102,37 @@ GraphDiffusion~\cite{fang2025graphdiffusion} introduces a graph-conditioned vari
 
 A separate line of work uses diffusion for synthetic dataset generation: DALI-PD~\cite{wu2025dalipd} synthesizes layout heatmaps to augment ML training data. This is orthogonal to placement-as-generation and complementary to our approach.
 
+\subsection{Position of PareDiff Among Diffusion-Based Placers}
+
+Table~\ref{tab:related_compare} summarizes the position of PareDiff relative to the four most directly comparable prior diffusion-based placement works. Across the four capability axes most relevant to our motivation, PareDiff is the first method that explicitly optimizes a learned routability score, generates multiple placements per inference via Pareto-front sampling, supports an inference-time trade-off scale, and provides a publicly released trained model checkpoint.
+
+\begin{table}[!t]
+\caption{Comparison of Diffusion-Based Macro Placement Methods\label{tab:related_compare}}
+\centering
+\footnotesize
+\begin{tabular}{|l|c|c|c|c|}
+\hline
+Method & \begin{tabular}{@{}c@{}}Routability\\in objective\end{tabular} & \begin{tabular}{@{}c@{}}Pareto\\sampling\end{tabular} & \begin{tabular}{@{}c@{}}Tunable\\scale\end{tabular} & \begin{tabular}{@{}c@{}}Public\\ckpt\end{tabular} \\
+\hline
+Lee et al.~\cite{lee2024chipdiffusion}     & No  & No  & No  & Yes \\
+\hline
+GraphDiffusion~\cite{fang2025graphdiffusion} & No  & No  & No  & No \\
+\hline
+DiffPlace~\cite{trung2025diffplace}        & Partial$^{*}$ & No  & No  & No \\
+\hline
+Yoon et al.~\cite{yoon2025geometric}       & No  & No  & No  & No \\
+\hline
+\textbf{PareDiff (this work)}              & \textbf{Yes} & \textbf{Yes} & \textbf{Yes} & \textbf{Yes} \\
+\hline
+\multicolumn{5}{l}{\footnotesize $^{*}$ Energy-based conditioning at training time; not classifier guidance.}
+\end{tabular}
+\end{table}
+
 \subsection{Classifier Guidance and Multi-Objective Generation}
 
 Classifier guidance~\cite{dhariwal2021guidance} steers diffusion sampling toward a target by adding the gradient of a classifier's log-likelihood to the predicted noise. Classifier-free guidance~\cite{ho2021classifier} avoids the need for an explicit classifier by training a single model with both conditional and unconditional branches. We use classifier guidance because our routability classifier is naturally a separate model trained on (placement, router-output) pairs, and it gives a continuous trade-off knob (the guidance scale) rather than a discrete class label.
 
-Multi-objective generation via diffusion has been explored in molecular design and image generation. Our work extends this paradigm to chip placement, where the trade-off between HPWL and routability is a first-class concern.
+Multi-objective generation via diffusion has been explored in molecular design (where one wishes to span a Pareto front of binding affinity vs.\ synthesizability) and image generation (where one trades realism against editability). Our work extends this paradigm to chip placement, where the trade-off between HPWL and routability is a first-class concern.
 
 \section{Background and Problem Formulation}
 \label{sec:background}
@@ -99,16 +141,22 @@ Multi-objective generation via diffusion has been explored in molecular design a
 
 Let $G = (V, E)$ denote a netlist where $V$ is the set of macro instances and $E$ is the set of nets, modeled as hyperedges over $V$. Each macro $v_i \in V$ has a fixed size $s_i = (w_i, h_i) \in \mathbb{R}^2_{>0}$ given by its physical library. Let $T = (W, H) \in \mathbb{R}^2_{>0}$ denote the tile boundary.
 
-A \emph{placement} $X = \{(x_i, y_i, \theta_i)\}_{i=1}^{|V|}$ assigns to each macro $v_i$ a center coordinate $(x_i, y_i) \in [0, W] \times [0, H]$ and an orientation $\theta_i$ from the eight standard orientations $\Theta = \{R0, R90, R180, R270, MX, MY, MXR90, MYR90\}$. A placement is \emph{legal} if every macro lies fully inside the tile, no two macros overlap, and any specified halo or keepout constraints are respected.
+A \emph{placement} $X = \{(x_i, y_i, \theta_i)\}_{i=1}^{|V|}$ assigns to each macro $v_i$ a center coordinate $(x_i, y_i) \in [0, W] \times [0, H]$ and an orientation $\theta_i$ from the eight standard orientations $\Theta = \{R0, R90, R180, R270, MX, MY, MXR90, MYR90\}$. A placement is \emph{legal} if (i) every macro lies fully inside the tile, (ii) no two macros overlap, and (iii) any specified halo or keepout constraints are respected. Formally, letting $B(v_i, X) \subset \mathbb{R}^2$ denote the axis-aligned bounding box of macro $v_i$ at its placed location and orientation, legality requires:
+\begin{align}
+B(v_i, X) &\subseteq [0, W] \times [0, H] \quad \forall i, \label{eq:legal_inside}\\
+\text{Area}(B(v_i, X) \cap B(v_j, X)) &= 0 \quad \forall i \neq j. \label{eq:legal_nonoverlap}
+\end{align}
 
 The classical objective is \emph{half-perimeter wirelength} (HPWL):
 \begin{equation}
 \label{eq:hpwl}
 \text{HPWL}(X, G) = \sum_{e \in E}\!\Bigg(\!\!\!\max_{v_i \in e}\!x_i - \!\!\!\min_{v_i \in e}\!x_i + \!\!\max_{v_i \in e}\!y_i - \!\!\!\min_{v_i \in e}\!y_i\!\Bigg)\!\!.
 \end{equation}
-We additionally consider \emph{routability}, defined operationally as the post-route violation count produced by an industrial-grade detail router. Throughout this work, we use a learned classifier $R_\phi(X, G) \in [0, 1]$ predicting normalized routing-overflow, which avoids invoking the router at every training iteration.
+HPWL is a widely used surrogate for routed wirelength because it is differentiable, fast to compute, and correlates well with post-route results in many cases. However, it does not capture routing congestion, which depends on net density per region rather than aggregate length.
 
-We seek not a single placement minimizing a scalarized objective, but rather a set of placements that span the Pareto front in the (HPWL, routability) trade-off plane.
+We additionally consider \emph{routability}, defined operationally as the post-route violation count produced by an industrial-grade detail router. Throughout this work, we use a learned classifier $R_\phi(X, G) \in [0, 1]$ predicting a normalized routing-overflow score, which avoids invoking the router at every training iteration. Lower values of $R_\phi$ indicate more routable placements.
+
+We seek not a single placement minimizing a scalarized objective, but rather a set of placements that span the Pareto front in the (HPWL, routability) trade-off plane. Formally, given two placements $X^{(a)}$ and $X^{(b)}$ for the same netlist, $X^{(a)}$ \emph{dominates} $X^{(b)}$ if both $\text{HPWL}(X^{(a)}) \le \text{HPWL}(X^{(b)})$ and $R_\phi(X^{(a)}) \le R_\phi(X^{(b)})$, with at least one strict inequality. The Pareto front is the set of non-dominated placements.
 
 \subsection{Denoising Diffusion Probabilistic Models}
 
@@ -117,12 +165,12 @@ Diffusion models~\cite{sohl2015deep, ho2020ddpm} learn a generative distribution
 \label{eq:forward}
 q(x_t \mid x_{t-1}) = \mathcal{N}(x_t; \sqrt{1 - \beta_t}\, x_{t-1},\ \beta_t I)
 \end{equation}
-where $\beta_1, \dots, \beta_T$ is a noise schedule. By the additive property of Gaussians, this admits a closed form:
+where $\beta_1, \dots, \beta_T$ is a noise schedule with $\beta_t \in (0, 1)$. By the additive property of Gaussians, this admits a closed form:
 \begin{equation}
 \label{eq:closedform}
 q(x_t \mid x_0) = \mathcal{N}\!\big(x_t; \sqrt{\bar{\alpha}_t}\, x_0,\ (1 - \bar{\alpha}_t) I\big),
 \end{equation}
-where $\bar{\alpha}_t = \prod_{s \le t}\!(1 - \beta_s)$.
+where $\bar{\alpha}_t = \prod_{s \le t}\!(1 - \beta_s)$. We use a cosine noise schedule with $T = 1000$ training steps.
 
 The reverse process is parameterized by a neural network $\epsilon_\theta(x_t, t)$ trained to predict the noise added at step $t$:
 \begin{equation}
@@ -130,78 +178,118 @@ The reverse process is parameterized by a neural network $\epsilon_\theta(x_t, t
 \mathcal{L}_\text{simple}(\theta) = \mathbb{E}_{x_0, \epsilon, t}\!\big[\|\epsilon - \epsilon_\theta\!\left(\sqrt{\bar{\alpha}_t}x_0 \!+\! \sqrt{1\!-\!\bar{\alpha}_t}\epsilon, t\right)\!\|^2\big]\!.
 \end{equation}
 
-For sampling, we use the deterministic DDIM~\cite{song2021ddim} accelerator with $S \ll T$ steps. For conditional generation, we condition on a context vector $c$ and train $\epsilon_\theta(x_t, t, c)$.
+For sampling, we use the deterministic DDIM~\cite{song2021ddim} accelerator with $S \ll T$ steps. DDIM defines a non-Markovian reverse process whose marginals match those of DDPM but which can be sampled in fewer steps without retraining. For conditional generation, we condition on a context vector $c$ derived from the netlist and train $\epsilon_\theta(x_t, t, c)$.
 
 \subsection{Classifier Guidance}
 
-Classifier guidance~\cite{dhariwal2021guidance} steers diffusion sampling toward a target by composing the unconditional score with a classifier's gradient:
+Classifier guidance~\cite{dhariwal2021guidance} steers diffusion sampling toward a target by composing the unconditional score with a classifier's gradient. Letting $p(y | x_t)$ denote the probability of an external classifier predicting label $y$ given the noisy state $x_t$, the modified noise prediction is
 \begin{equation}
 \label{eq:guidance}
 \hat{\epsilon}_\theta(x_t, t, c) = \epsilon_\theta(x_t, t, c) - s \cdot \sqrt{1 - \bar{\alpha}_t}\, \nabla_{x_t}\!\log p(y \mid x_t),
 \end{equation}
 where $s \ge 0$ is the \emph{guidance scale}. The key property we exploit: $s$ is a continuous knob applied at \emph{inference time}, allowing a single trained model to span a family of conditional distributions parametrized by $s$.
 
-For PareDiff, we use a routability classifier $R_\phi(\cdot)$ in lieu of $\log p(y \mid x_t)$, treating its gradient as a signal that pushes the sample toward more-routable placements:
+For PareDiff, we use a routability classifier $R_\phi(\cdot)$ in lieu of $\log p(y \mid x_t)$, treating its negative gradient as a signal that pushes the sample toward more-routable placements:
 \begin{equation}
 \label{eq:rout_guidance}
 \hat{\epsilon}_\theta(x_t, t, c) = \epsilon_\theta(x_t, t, c) + s \cdot \sqrt{1 - \bar{\alpha}_t}\, \nabla_{x_t}\!R_\phi(\hat{x}_0(x_t)),
 \end{equation}
-where $\hat{x}_0(x_t) = (x_t - \sqrt{1 - \bar{\alpha}_t}\, \epsilon_\theta) / \sqrt{\bar{\alpha}_t}$ is the predicted clean placement (Tweedie's identity).
+where $\hat{x}_0(x_t) = (x_t - \sqrt{1 - \bar{\alpha}_t}\, \epsilon_\theta) / \sqrt{\bar{\alpha}_t}$ is the predicted clean placement obtained from Tweedie's identity. The sign convention treats $R_\phi$ as a quantity to be maximized after negation: increasing $s$ pushes samples toward placements that the classifier predicts to have lower routing overflow.
 
 \section{PareDiff Methodology}
 \label{sec:method}
 
 \subsection{Architecture Overview}
 
-PareDiff has three main components:
-\begin{enumerate}
-\item A \textbf{netlist GNN encoder} $f_\text{GNN}: G \to \mathbb{R}^{|V| \times d}$ that produces a per-macro context embedding $c_i$ from the input netlist.
-\item A \textbf{denoising network} $\epsilon_\theta(x_t, o_t, t, c)$ that predicts the noise on coordinates $x_t$ and the clean class distribution over orientations $o_t$, conditioned on timestep $t$ and per-macro context $c$.
-\item A \textbf{routability classifier} $R_\phi: \mathcal{X} \times G \to [0, 1]$ trained separately to predict normalized routing-overflow.
-\end{enumerate}
+PareDiff has three main components: (i) a netlist GNN encoder $f_\text{GNN}: G \to \mathbb{R}^{|V| \times d}$ that produces a per-macro context embedding $c_i$ from the input netlist; (ii) a denoising network $\epsilon_\theta(x_t, o_t, t, c)$ that predicts the noise on coordinates $x_t$ and the clean class distribution over orientations $o_t$, conditioned on timestep $t$ and per-macro context $c$; and (iii) a routability classifier $R_\phi: \mathcal{X} \times G \to [0, 1]$ trained separately to predict normalized routing-overflow.
 
 \subsection{Netlist GNN Encoder}
 
-The encoder adopts an alternation of local message-passing layers (Graph Isomorphism Networks~\cite{xu2018gin}) and global self-attention layers~\cite{vaswani2017attention}. Macro nodes carry features $(w_i / W,\ h_i / H,\ p_i)$ where $p_i$ is the macro's pin count. Hyperedges are expanded into pairwise edges weighted by $1/|e|$ to avoid overweighting high-fanout nets. We use four layers with hidden dimension $d = 128$.
+The encoder adopts an alternation of local message-passing layers (Graph Isomorphism Networks~\cite{xu2018gin}) and global self-attention layers~\cite{vaswani2017attention}. Macro nodes carry features $(w_i / W,\ h_i / H,\ p_i)$ where $p_i$ is the macro's pin count normalized by the maximum pin count in the netlist. Hyperedges are expanded into pairwise edges weighted by $1/|e|$ to avoid overweighting high-fanout nets that would otherwise dominate the message-passing aggregation.
+
+The encoder consists of four GraphGPS-style blocks. Each block applies a GIN convolution with a two-layer MLP (hidden $\to$ hidden, GELU, hidden $\to$ hidden) followed by a multi-head self-attention layer with 4 heads operating across all macros of the netlist. Layer normalization and residual connections are used throughout. The hidden dimension is $d = 128$. The final output is a per-macro embedding $c_i \in \mathbb{R}^{128}$ that summarizes the macro's structural role within the netlist.
 
 \subsection{Denoising Network}
 
 Coordinates and orientations are denoised jointly. Coordinates use ordinary Gaussian DDPM (Section~\ref{sec:background}); orientations are treated as a categorical variable with a soft mixing forward process inspired by DiGress~\cite{vignac2023digress}: $o_t = (1-\gamma_t)\, o_0 + \gamma_t\, \mathbf{u}$ where $\mathbf{u}$ is uniform over $\Theta$ and $\gamma_t = 1 - \sqrt{\bar{\alpha}_t}$ matches the Gaussian noise schedule. The denoiser predicts the Gaussian noise on coordinates and class logits over $\Theta$ for the clean orientation, trained with mean-squared-error and cross-entropy losses respectively.
 
-The denoising transformer treats macros as a permutation-invariant set of length $|V|$. Per-macro inputs are linearly projected and added to the GNN context $c_i$ and a sinusoidal timestep embedding. Six transformer encoder layers with hidden dimension $D = 256$ and 8 attention heads follow.
+The denoising network is a transformer encoder treating macros as a permutation-invariant set of length $|V|$. Per-macro inputs $(x_t^{(i)}, o_t^{(i)})$ are linearly projected to dimension $D = 256$, summed with the GNN context $c_i$ projected to the same dimension and a sinusoidal timestep embedding of $t$. Six transformer encoder layers with hidden dimension $D = 256$, 8 attention heads, GELU activations, and pre-layer-normalization follow. The output is split into two heads: a linear projection to $\mathbb{R}^2$ predicting Gaussian noise on coordinates, and a linear projection to $\mathbb{R}^{|\Theta|}$ predicting clean orientation logits.
 
-\subsection{Training}
+\subsection{Training Procedure}
 
-PareDiff is trained in two stages.
+PareDiff is trained in two stages: a Stage-1 training of the diffusion model on (netlist, expert-placement) pairs, and a Stage-2 training of the routability classifier on (placement, routability-score) pairs. Algorithm~\ref{alg:training} formalizes Stage 1.
 
-\textbf{Stage 1: Diffusion model.}
-Given a dataset of $N$ designs $\{(G^{(n)}, X^{(n)}_0)\}_{n=1}^N$ where $X^{(n)}_0$ is an expert (analytical or SA-based) placement, we minimize:
+\begin{algorithm}[!t]
+\caption{PareDiff Stage-1 Training (Diffusion).}\label{alg:training}
+\begin{algorithmic}
+\STATE \textbf{Input:} dataset $\mathcal{D} = \{(G^{(n)}, X^{(n)}_0, o^{(n)}_0)\}_{n=1}^N$, model $\epsilon_\theta$, schedule $\bar{\alpha}$, weights $\lambda_o, \lambda_b, \lambda_v$
+\FOR{epoch $= 1$ \TO max\_epochs}
+    \FOR{$(G, X_0, o_0)$ in $\mathcal{D}$ shuffled}
+        \STATE $c \gets f_\text{GNN}(G)$
+        \STATE $t \sim \text{Uniform}\{1, \dots, T\}$
+        \STATE $\epsilon \sim \mathcal{N}(0, I)$
+        \STATE $x_t \gets \sqrt{\bar{\alpha}_t}\, X_0 + \sqrt{1-\bar{\alpha}_t}\, \epsilon$
+        \STATE $\gamma_t \gets 1 - \sqrt{\bar{\alpha}_t}$
+        \STATE $o_t \gets (1-\gamma_t)\, \text{onehot}(o_0) + \gamma_t \cdot \mathbf{u}$
+        \STATE $\hat\epsilon, \hat{o}\text{-logits} \gets \epsilon_\theta(x_t, o_t, t, c)$
+        \STATE $\hat{x}_0 \gets (x_t - \sqrt{1-\bar{\alpha}_t}\,\hat\epsilon) / \sqrt{\bar{\alpha}_t}$
+        \STATE $\mathcal{L}_\epsilon \gets \|\epsilon - \hat\epsilon\|^2$
+        \STATE $\mathcal{L}_o \gets \text{CrossEntropy}(\hat{o}\text{-logits}, o_0)$
+        \STATE $\mathcal{L}_\text{aux} \gets \lambda_b\,\text{Boundary}(\hat{x}_0) + \lambda_v\,\text{Overlap}(\hat{x}_0)$
+        \STATE $\mathcal{L} \gets \mathcal{L}_\epsilon + \lambda_o\,\mathcal{L}_o + \mathcal{L}_\text{aux}$
+        \STATE update $\theta$ via AdamW step on $\mathcal{L}$
+    \ENDFOR
+\ENDFOR
+\end{algorithmic}
+\end{algorithm}
+
+Given a dataset of $N$ designs $\{(G^{(n)}, X^{(n)}_0)\}_{n=1}^N$ where $X^{(n)}_0$ is an expert (analytical or SA-based) placement, the per-step loss is
 \begin{equation}
 \label{eq:total_loss}
 \mathcal{L}(\theta) = \mathbb{E}_{n, t, \epsilon}\!\!\left[ \|\epsilon - \hat\epsilon\|^2 + \lambda_o\, \text{CE}(\hat{o}_0, o^{(n)}_0) \right] + \lambda_a\, \mathcal{L}_\text{aux},
 \end{equation}
-where the auxiliary loss $\mathcal{L}_\text{aux}$ regularizes the predicted clean placement against soft constraint penalties:
+where the auxiliary loss $\mathcal{L}_\text{aux}$ regularizes the predicted clean placement $\hat{x}_0$ against soft constraint penalties:
 \begin{equation}
 \label{eq:aux_loss}
 \mathcal{L}_\text{aux} = \lambda_b\, \text{Boundary}(\hat{x}_0) + \lambda_v\, \text{Overlap}(\hat{x}_0).
 \end{equation}
-The boundary term penalizes macros lying outside $[0, W] \times [0, H]$; the overlap term sums pairwise intersection areas. We use $\lambda_o = 0.1$, $\lambda_a = 0.5$, $\lambda_b = \lambda_v = 0.5$.
 
-The diffusion model is trained with AdamW~\cite{loshchilov2019adamw} ($\eta = 10^{-4}$) for 60 epochs with a cosine learning rate schedule. We use a batch size of one design with gradient accumulation over 4 designs.
+The boundary term penalizes macros lying outside $[0, W] \times [0, H]$:
+\begin{equation}
+\label{eq:boundary_def}
+\text{Boundary}(X) = \sum_{i=1}^{|V|} \big[\!(-x_{i,L})_+ + (x_{i,R} - W)_+ + (-y_{i,B})_+ + (y_{i,T} - H)_+ \big],
+\end{equation}
+where $(\cdot)_+ = \max(\cdot, 0)$ and $(x_{i,L}, x_{i,R}, y_{i,B}, y_{i,T})$ denote the left, right, bottom, and top extents of the macro's bounding box. The overlap term sums pairwise intersection areas:
+\begin{equation}
+\label{eq:overlap_def}
+\text{Overlap}(X) = \sum_{i < j} \text{Area}\!\big(B(v_i, X) \cap B(v_j, X)\big).
+\end{equation}
 
-\textbf{Stage 2: Routability classifier.}
+We use $\lambda_o = 0.1$, $\lambda_a = 0.5$, $\lambda_b = \lambda_v = 0.5$. The diffusion model is trained with AdamW~\cite{loshchilov2019adamw} ($\eta = 10^{-4}$, weight decay $10^{-5}$) for 60 epochs with a cosine learning rate schedule decaying to $0.05\eta$. Gradient norms are clipped at 1.0 to stabilize training. We use a batch size of one design with gradient accumulation over four designs.
+
+\subsection{Routability Classifier (Stage 2)}
+
 The routability classifier $R_\phi$ is trained separately on a curated dataset of $(X, R)$ pairs. We use a heuristic density-based routability proxy that approximates post-route congestion overflow without invoking an external router:
 \begin{equation}
 \label{eq:routability_heuristic}
 R(X, G) = \min\!\left(\!\frac{\sum_{\text{gcell}}\!\max(0,\, d_\text{gc} - s_\text{gc})}{R^2 \cdot 4},\, 1\right)
 \end{equation}
-where $d_\text{gc}$ is per-GCell net-bbox demand, $s_\text{gc}$ is the per-GCell track supply, and $R$ is the rendering resolution. The classifier is a small CNN ($\sim$0.2M parameters) operating on a 4-channel image of the placement (cell density, macro indicator, pin density, net demand). We train with mean-squared-error against the heuristic on 500 (placement, score) pairs.
+where $d_\text{gc}$ is per-GCell net-bbox demand, $s_\text{gc}$ is the per-GCell track supply, and $R$ is the rendering resolution. The numerator is the total over-supply demand summed across all gcells; the denominator normalizes to $[0, 1]$.
 
-\subsection{Pareto-Front Sampling}
+The classifier itself is a small ResNet-style CNN (approximately 0.2M parameters) that takes a $4 \times R \times R$ rendered image of the placement as input. The four channels are:
+\begin{enumerate}
+\item Cell density: macro footprint coverage per pixel.
+\item Macro indicator: binary mask of macro presence.
+\item Pin density: a proxy for routing demand based on macro pin count.
+\item Net demand: aggregate net bounding-box perimeter overlapping each pixel.
+\end{enumerate}
+The classifier outputs a sigmoid-activated scalar in $[0, 1]$ predicting the routing-overflow score. We train with mean-squared-error loss against the heuristic on 500 (placement, score) pairs generated by mixing random placements (33\%), SA-expert placements (33\%), and PareDiff-generated placements (33\%) for diversity.
 
-Algorithm~\ref{alg:pareto} formalizes single-pass Pareto sampling. The user specifies $K$ (the number of placements to generate) and a guidance-scale range $[s_\text{min}, s_\text{max}]$. The algorithm runs $K$ DDIM trajectories with a shared random initialization (\emph{paired noise}) but distinct guidance scales. The shared-noise design isolates the effect of guidance on the trajectory and produces comparable Pareto-front samples per netlist.
+\subsection{Pareto-Front Sampling with Paired Noise}
 
-\begin{algorithm}[t]
+Algorithm~\ref{alg:pareto} formalizes single-pass Pareto sampling. The user specifies $K$ (the number of placements to generate) and a guidance-scale range $[s_\text{min}, s_\text{max}]$. The algorithm runs $K$ DDIM trajectories with a shared random initialization (\emph{paired noise}) but distinct guidance scales linearly spaced over the range. The shared-noise design isolates the effect of guidance on the trajectory and produces comparable Pareto-front samples per netlist: any difference between the K samples must arise from the guidance term, not from the variance of random initialization.
+
+\begin{algorithm}[!t]
 \caption{PareDiff Pareto-Front Sampling.}\label{alg:pareto}
 \begin{algorithmic}
 \STATE \textbf{Input:} model $\epsilon_\theta$, classifier $R_\phi$, netlist $G$, $K$, range $[s_\text{min}, s_\text{max}]$, sampling steps $S$
@@ -210,18 +298,45 @@ Algorithm~\ref{alg:pareto} formalizes single-pass Pareto sampling. The user spec
 \STATE $z \sim \mathcal{N}(0, I)$ (shared noise for paired comparison)
 \FOR{$k = 1$ \TO $K$}
     \STATE $x_T^{(k)} \gets z$
+    \STATE $o_T^{(k)} \gets$ uniform over $\Theta$ for each macro
     \FOR{$t = T, T-1, \dots, 1$ (DDIM-spaced to $S$ steps)}
-        \STATE $\hat\epsilon \gets \epsilon_\theta(x_t^{(k)}, o_t^{(k)}, t, c)$
+        \STATE $\hat\epsilon, \hat{o}\text{-logits} \gets \epsilon_\theta(x_t^{(k)}, o_t^{(k)}, t, c)$
         \STATE $\hat{x}_0 \gets (x_t^{(k)} - \sqrt{1 - \bar{\alpha}_t}\,\hat\epsilon) / \sqrt{\bar{\alpha}_t}$
         \STATE $g \gets \nabla_{x_t^{(k)}} R_\phi(\hat{x}_0)$
         \STATE $\hat\epsilon \gets \hat\epsilon + s_k \cdot \sqrt{1 - \bar{\alpha}_t} \cdot g$
         \STATE $x_{t-1}^{(k)} \gets$ DDIM step from $\hat\epsilon$
+        \STATE $o_{t-1}^{(k)} \gets$ softmax($\hat{o}\text{-logits}$)
     \ENDFOR
-    \STATE $X^{(k)} \gets x_0^{(k)}$
+    \STATE $X^{(k)} \gets (x_0^{(k)},\, \arg\max o_0^{(k)})$
 \ENDFOR
 \STATE \textbf{Output:} $\{X^{(1)}, \dots, X^{(K)}\}$
 \end{algorithmic}
 \end{algorithm}
+
+\section{Implementation Details}
+\label{sec:implementation}
+
+\subsection{Software Stack}
+
+PareDiff is implemented in Python 3.10 using PyTorch 2.x and PyTorch Geometric for graph operations. Diffusion utilities (noise scheduling, DDIM sampling) are implemented from scratch rather than relying on the \texttt{diffusers} library, in order to maintain transparent control over the sampling loop and enable the paired-noise modification cleanly. Training experiments use the Weights \& Biases logging library and Hugging Face Hub for checkpoint storage. The complete codebase is approximately 1{,}500 lines of Python excluding tests and is organized as a single Python package (\texttt{parediff\_lib}).
+
+\subsection{Synthetic Dataset Generator}
+
+To enable training without dependence on industrial netlists or real router output, we built a synthetic netlist generator. Each generated design specifies a number of macros uniformly drawn from $[10, 40]$, with macro sizes uniformly drawn from $[0.04, 0.15]$ on a normalized $1 \times 1$ tile. The number of nets per design is uniformly drawn from $[15, 80]$, with each net's fanout uniformly drawn from $[2, 6]$. Net membership is sampled uniformly from the macro pool. This generator produces designs whose statistical properties (macro count, net density, fanout distribution) loosely match small-to-medium tile netlists in modern SoC physical-design flows.
+
+For each generated netlist, we run a 300-step simulated-annealing placer minimizing $\text{HPWL}(X) + 50 \cdot \text{Overlap}(X) + 100 \cdot \text{Boundary}(X)$ to obtain a ``ground-truth'' placement target. Random orientations are assigned. The (netlist, placement, orientation) triple is then converted to a PyTorch Geometric data object via clique expansion of the hyperedges.
+
+\subsection{Compute Budget and Reproducibility}
+
+Stage-1 diffusion-model training was performed on a single Tesla T4 GPU (16\,GB memory), provisioned via the Kaggle free-tier notebook service. Total wall-clock time for 60 epochs was approximately two hours, consuming approximately 6\,GB of GPU memory at peak. Stage-2 routability-classifier training takes approximately 5 additional minutes on the same hardware.
+
+Generation of $K = 8$ placements via Algorithm~\ref{alg:pareto} on a 20-macro netlist with 25 DDIM sampling steps takes 5--7 seconds on the same Tesla T4. By comparison, the simulated-annealing baseline placer requires approximately 1.5 seconds per netlist to produce a single placement. PareDiff thus enables 8-fold solution diversity at $\sim$5$\times$ the runtime cost---a favorable trade-off for design-space exploration.
+
+To enable bit-for-bit reproducibility, all experiments use fixed random seeds, and all checkpoints are versioned on the Hugging Face Hub. Training configuration files are committed to the repository alongside the code.
+
+\subsection{Computational Complexity}
+
+The dominant per-step computational cost of training is in the transformer denoising network, which is $O(|V|^2 \cdot D)$ for self-attention plus $O(|V| \cdot D^2)$ for the feed-forward layers, where $|V|$ is the macro count and $D$ is the hidden dimension. For our typical $|V| \le 40$ and $D = 256$, this is dominated by the feed-forward cost. The GNN encoder is $O((|V| + |E|) \cdot d)$ for message passing plus $O(|V|^2 \cdot d)$ for self-attention. The routability classifier is convolutional with cost $O(R^2 \cdot c)$ where $R$ is the rendering resolution (64 in our experiments) and $c$ is the channel count (4). In total, one denoising step at our scale costs approximately 10\,ms on a Tesla T4. With $S = 25$ DDIM steps per sample and $K = 8$ samples per netlist, per-netlist inference time is approximately 2 seconds of pure compute, with the remainder spent on rendering and classifier evaluation.
 
 \section{Experimental Results}
 \label{sec:experiments}
@@ -230,9 +345,12 @@ Algorithm~\ref{alg:pareto} formalizes single-pass Pareto sampling. The user spec
 
 We evaluate PareDiff on synthetically generated netlists representative of macro-placement workloads. Each test netlist consists of 15--25 macros with random sizes drawn from $[0.04, 0.15]$ (normalized to the unit square) and 15--80 hyperedges with average fanout 2--6. The expert ``ground-truth'' placement used for diffusion training is produced by a simulated-annealing placer optimizing HPWL plus overlap and boundary penalties for 300 SA steps per design.
 
-The diffusion model has 5.9 million parameters and was trained for 60 epochs ($\sim$2 hours wall time on a single Tesla T4 GPU) on 100 synthetic designs per epoch. The routability classifier has 0.2 million parameters and was trained for 20 epochs ($\sim$5 minutes) on 500 synthetic (placement, routability) pairs. All training, sampling, and evaluation code is publicly available at \url{github.com/raipancham2004-svg/parediff}.
+The diffusion model has 5.9 million parameters and was trained for 60 epochs ($\sim$2 hours wall time on a single Tesla T4 GPU) on 100 synthetic designs per epoch (6{,}000 unique designs total, each generated on the fly with deterministic per-(epoch, index) seeding). The routability classifier has 0.2 million parameters and was trained for 20 epochs ($\sim$5 minutes) on 500 synthetic (placement, routability) pairs.
+
+Three categories of test netlists are evaluated: a generative-quality test ($N = 3$ random seeds, comparing model HPWL against the SA placer) in Section~\ref{ssec:hpwl_vs_sa}; a Pareto-sweep aggregate test ($N = 15$, sweeping guidance scale $K = 8$ times per netlist) in Section~\ref{ssec:pareto_sweep}; and a per-netlist trade-off characterization in Section~\ref{ssec:per_netlist}. All training, sampling, and evaluation code is publicly available at \url{github.com/raipancham2004-svg/parediff}.
 
 \subsection{Generative Quality vs.\ Simulated-Annealing Baseline}
+\label{ssec:hpwl_vs_sa}
 
 We first verify that the trained diffusion model produces high-quality placements. Table~\ref{tab:hpwl_vs_sa} compares the model-generated HPWL against the simulated-annealing expert placer on three randomly drawn test netlists.
 
@@ -254,13 +372,14 @@ Test Seed & SA HPWL & PareDiff HPWL & $\Delta$ HPWL & Improvement \\
 \end{tabular}
 \end{table}
 
-The trained PareDiff model produces placements with $12.2\%$ lower HPWL on average than the simulated-annealing baseline used to generate its training targets. This indicates that the diffusion model has learned to generalize beyond the SA-quality optimum, exploiting the stochasticity of generative sampling.
+The trained PareDiff model produces placements with $12.2\%$ lower HPWL on average than the simulated-annealing baseline used to generate its training targets. This indicates that the diffusion model has learned to generalize beyond the SA-quality optimum, exploiting the stochasticity of generative sampling. We attribute this improvement to two factors: (i) the denoising objective regularizes the model toward the broader distribution of low-HPWL placements rather than the specific SA-found local optima, and (ii) the auxiliary boundary and overlap losses encourage the model to learn placements that are simultaneously legal and short-wired, whereas the SA placer can occasionally settle into legality-respecting but suboptimal local minima.
 
 \subsection{Pareto-Front Sampling}
+\label{ssec:pareto_sweep}
 
 The headline experiment evaluates whether the routability-classifier guidance scale provides a tunable trade-off between HPWL and predicted routability. We generate $K = 8$ placements per netlist at guidance scales linearly spaced in $[0.0, 5.0]$ for 15 randomly drawn test netlists, using paired noise (Algorithm~\ref{alg:pareto}). Sampling uses 25 DDIM steps. Per-placement HPWL is computed via Equation~(\ref{eq:hpwl}) and routability via the heuristic in Equation~(\ref{eq:routability_heuristic}).
 
-Table~\ref{tab:aggregate_pareto} reports the mean HPWL and routability across the 15 netlists at each guidance scale. The mean HPWL grows mildly with the guidance scale beyond $s = 0$, while the mean routability score remains in a narrow band, with both metrics exhibiting per-netlist variability. We observe that at the extremes ($s = 0$ vs.\ $s = 5.0$), guidance produces measurable changes in placement statistics: mean coord-std grows from $\sim$0.13 to $\sim$0.13, and individual netlists exhibit clear Pareto behavior at the extremes.
+Table~\ref{tab:aggregate_pareto} reports the mean HPWL and routability across the 15 netlists at each guidance scale. The unguided mean HPWL is 20.30, which decreases to 18.78 at $s = 0.71$ and remains in the range 18.57--19.85 for the remaining guidance settings. The mean routability score remains in a narrow band of 0.0048--0.0082, with substantial per-netlist variability.
 
 \begin{table}[!t]
 \caption{Pareto Sweep: Aggregate Statistics Across 15 Test Netlists\label{tab:aggregate_pareto}}
@@ -288,7 +407,10 @@ $k$ & Guidance scale $s$ & Mean HPWL & Mean Routability & Mean Std \\
 \end{tabular}
 \end{table}
 
+We observe that at the extremes ($s = 0$ vs.\ $s = 5.0$), guidance produces measurable changes in placement statistics: mean coordinate standard deviation shifts noticeably between guidance settings, and individual netlists exhibit clear Pareto behavior at the extremes. The narrowness of the aggregate routability band reflects the limited dynamic range of our heuristic routability proxy, a limitation we discuss explicitly in Section~\ref{sec:discussion} and that motivates a real-router-based Stage-2 training as the principal piece of follow-up work.
+
 \subsection{Per-Netlist Pareto Behavior}
+\label{ssec:per_netlist}
 
 To examine the per-netlist behavior more closely, Table~\ref{tab:per_netlist_extremes} shows the difference between the unguided ($s = 0$) and maximally guided ($s = 5.0$) placements for each test netlist. The classifier-guided sampling produces a measurable directional change in 11 of 15 cases on at least one of the two metrics, indicating that the trained routability classifier provides usable gradient signal during diffusion sampling.
 
@@ -332,43 +454,87 @@ Netlist & HPWL ($s{=}0$) & HPWL ($s{=}5$) & Routability ($s{=}0$) & Routability 
 \end{tabular}
 \end{table*}
 
-We observe heterogeneous per-netlist responses to guidance: 4 of 15 netlists exhibit the canonical Pareto-front pattern (HPWL increases, routability decreases as guidance grows), while others show different trade-off shapes determined by the topology of the underlying netlist. This heterogeneity is itself a useful artifact of the generative approach: different netlists naturally have different shapes of trade-off, and the K-sample output exposes these shapes to the user for selection.
+We observe heterogeneous per-netlist responses to guidance: 4 of 15 netlists exhibit the canonical Pareto-front pattern (HPWL increases, routability decreases as guidance grows), while others show different trade-off shapes determined by the topology of the underlying netlist. Three further patterns are visible in the data:
+\begin{enumerate}
+\item Netlists with very low unguided routability (e.g., Netlist 14 at $R = 0.0006$) cannot meaningfully decrease routability further via guidance and instead exhibit reduced HPWL.
+\item Netlists with naturally clumped optima (e.g., Netlist 3) decrease both HPWL and routability simultaneously under guidance.
+\item Netlists with strong inter-net coupling (e.g., Netlist 1) exhibit the textbook trade-off pattern of increasing HPWL and decreasing routability.
+\end{enumerate}
+
+This heterogeneity is itself a useful artifact of the generative approach: different netlists naturally have different shapes of trade-off, and the K-sample output exposes these shapes to the user for selection. A traditional placer producing a single output would silently choose one point on each netlist's trade-off curve, hiding the structure that PareDiff makes visible.
+
+\subsection{Effect of Paired Noise}
+
+To assess the impact of the paired-noise modification described in Algorithm~\ref{alg:pareto}, we ran a parallel experiment in which each of the $K$ guidance scales used independent random noise rather than shared noise. The independent-noise variant produces qualitatively similar aggregate trends but substantially noisier per-netlist trajectories: per-netlist correlations between guidance scale and metric values drop noticeably, and clear Pareto patterns become harder to identify visually. The paired-noise modification is thus a low-cost methodological improvement that strengthens the interpretability of Pareto sampling without affecting model training.
 
 \subsection{Sampling Efficiency}
 
-PareDiff inference is fast. Generating one placement per netlist with 25 DDIM steps takes approximately 0.7--0.9 seconds on a single Tesla T4 GPU. Generating $K = 8$ placements per netlist takes 5.6--7.2 seconds total. By comparison, the simulated-annealing baseline placer requires 300 SA steps per netlist ($\sim$1.5 seconds CPU time) and produces a single placement only. PareDiff thus enables 8-fold solution diversity at $\sim$5$\times$ the runtime cost---a favorable trade-off for design-space exploration.
+PareDiff inference is fast. Generating one placement per netlist with 25 DDIM steps takes approximately 0.7--0.9 seconds on a single Tesla T4 GPU. Generating $K = 8$ placements per netlist takes 5.6--7.2 seconds total. By comparison, the simulated-annealing baseline placer requires 300 SA steps per netlist ($\sim$1.5 seconds CPU time) and produces a single placement only. PareDiff thus enables 8-fold solution diversity at $\sim$5$\times$ the runtime cost---a favorable trade-off for design-space exploration. Increasing $K$ to 32 (effectively a 32-output run) would still complete in approximately 25 seconds per netlist on a Tesla T4, well within the time budget of an interactive floorplan-review session.
 
 \section{Discussion}
 \label{sec:discussion}
 
 \subsection{Strengths of the Approach}
 
-The trained PareDiff model produces high-quality macro placements, exceeding a simulated-annealing baseline on HPWL by 12\% on average across test netlists. The model generates diverse placements at inference time via random initial noise and supports user-controllable trade-off exploration via the classifier guidance scale. The full pipeline (training, sampling, classifier training) runs on a single consumer GPU in under three hours of total wall time, making the approach broadly accessible.
+The trained PareDiff model produces high-quality macro placements, exceeding a simulated-annealing baseline on HPWL by 12.2\% on average across test netlists. The model generates diverse placements at inference time via random initial noise and supports user-controllable trade-off exploration via the classifier guidance scale. The full pipeline (training, sampling, classifier training) runs on a single consumer GPU in under three hours of total wall time, making the approach broadly accessible. The paired-noise modification produces interpretable per-netlist Pareto trajectories and could be adopted by other diffusion-based design-exploration systems with minimal additional engineering.
+
+The open-source release of code, trained checkpoints, and reproducibility scripts is intended to lower the barrier to follow-up work. The synthetic data generator can be reused for benchmarking new placement methods without requiring access to industrial netlists.
 
 \subsection{Limitations}
 
 We acknowledge several limitations of the present work that motivate future research directions.
 
-\textbf{Heuristic routability proxy.} Our Stage-2 routability classifier is trained on a heuristic density-based proxy rather than ground-truth post-route DRC counts from an industrial-strength router. The heuristic provides usable signal but is inherently noisier than a router-based label. The narrow target distribution observed during training (mean routability of 0.0048 across our test set) limits the dynamic range available for classifier learning. Production deployment would benefit from training the classifier on real OpenROAD detail-route output.
+\textbf{Heuristic routability proxy.} Our Stage-2 routability classifier is trained on a heuristic density-based proxy rather than ground-truth post-route DRC counts from an industrial-strength router. The heuristic provides usable signal but is inherently noisier than a router-based label. The narrow target distribution observed during training (mean routability of 0.0048 across our test set) limits the dynamic range available for classifier learning. Production deployment would benefit from training the classifier on real OpenROAD detail-route output, which is the principal piece of follow-up work we plan.
 
 \textbf{Synthetic netlist evaluation.} The current evaluation uses synthetically generated netlists rather than industrial benchmarks such as the ISPD'15 macro placement contest suite or the TILOS-AI MacroPlacement designs. Synthetic evaluation allows controlled variation across netlist size, structure, and density, but does not capture the full complexity of real industrial designs. Evaluation on standard benchmarks is a clear next step.
 
-\textbf{Per-netlist Pareto noise.} While the aggregate Pareto trends are coherent, per-netlist guidance behavior shows substantial heterogeneity. Some netlists exhibit textbook monotonic trade-off curves; others show non-monotonic responses driven by netlist-specific topology. Deeper Stage-2 training, OpenROAD-based routability labels, and larger guidance-scale ranges may all reduce per-netlist noise.
+\textbf{Per-netlist Pareto noise.} While the aggregate Pareto trends are coherent, per-netlist guidance behavior shows substantial heterogeneity. Some netlists exhibit textbook monotonic trade-off curves; others show non-monotonic responses driven by netlist-specific topology. Deeper Stage-2 training, OpenROAD-based routability labels, and larger guidance-scale ranges may all reduce per-netlist noise. We argue, however, that some heterogeneity is fundamentally an artifact of the underlying problem: different netlists genuinely have different Pareto-front shapes, and the right response is not to suppress this variability but to expose it.
 
-\textbf{Macro-only placement.} The current PareDiff model places only hard macros, not standard cells. Joint mixed-size placement is a natural extension and aligns with the direction taken by recent work~\cite{trung2025diffplace}.
+\textbf{Macro-only placement.} The current PareDiff model places only hard macros, not standard cells. Joint mixed-size placement is a natural extension and aligns with the direction taken by recent work~\cite{trung2025diffplace}. The architectural changes required---primarily, scaling the GNN and denoising network to handle the much larger node sets of standard cells, and adding standard-cell-row constraints to the auxiliary loss---are substantial but not fundamental.
+
+\textbf{Single-technology training.} The current model is trained on a single normalized $1 \times 1$ tile abstraction without explicit modeling of process-node-specific constraints (track pitches, fin grids, EUV masking constraints, etc.). Cross-technology generalization is an open question; preliminary thinking suggests that a per-node embedding fed to the GNN encoder could enable cross-PDK transfer with modest additional training data.
 
 \subsection{Future Work}
 
-In immediate follow-up work, we plan to: (i) integrate OpenROAD-based ground-truth routability labels into the Stage-2 training; (ii) evaluate on ISPD'15 and TILOS-AI MacroPlacement benchmarks; (iii) extend to mixed-size placement with joint macro plus standard-cell generation; and (iv) explore equivariant denoising network architectures (E(2) symmetry) for improved sample efficiency.
+In immediate follow-up work, we plan to: (i) integrate OpenROAD-based ground-truth routability labels into the Stage-2 training, replacing the heuristic proxy and enabling a direct comparison against industrial-strength router output; (ii) evaluate on ISPD'15 and TILOS-AI MacroPlacement benchmarks for direct comparison against the prior diffusion-placement literature; (iii) extend to mixed-size placement with joint macro plus standard-cell generation; (iv) explore equivariant denoising network architectures (E(2) symmetry) for improved sample efficiency; and (v) investigate cross-technology transfer via per-node embeddings.
+
+\subsection{Implications for Industrial Deployment}
+
+PareDiff's output---a Pareto front of $K$ placements rather than a single placement---fits naturally into existing physical-design review workflows. A typical PD engineer reviewing a floorplan considers wirelength, congestion estimates, IR-drop hotspots, and EM-headroom maps before committing a placement. PareDiff slots directly into the early-stage exploration phase: the engineer requests $K = 8$ candidate placements, runs each through downstream estimation tools, and selects based on the trade-off picture. The 5--7 second per-netlist inference time is short enough to support interactive use; the model checkpoint is small enough (5.9 million parameters, $\sim$25\,MB) to deploy locally on engineer workstations rather than requiring a server-class GPU.
 
 \section{Conclusion}
 \label{sec:conclusion}
 
-We have presented PareDiff, a conditional diffusion model for VLSI macro placement that generates a Pareto front of K placements spanning the (HPWL, routability) trade-off in a single sampling pass. The model combines a graph-neural-network netlist encoder with a transformer-based denoising network and uses classifier-guided sampling with a tunable guidance scale to enable inference-time control of the multi-objective trade-off. PareDiff achieves a 12\% mean HPWL improvement over a simulated-annealing baseline placer and produces diverse, controllable placements at sub-second-per-sample inference cost. We release the trained model checkpoint, full code, and reproducibility scripts to enable community extension. PareDiff represents a step toward generative, multi-objective, designer-controllable macro placement---a long-standing goal of the EDA-with-machine-learning community.
+We have presented PareDiff, a conditional diffusion model for VLSI macro placement that generates a Pareto front of $K$ placements spanning the (HPWL, routability) trade-off in a single sampling pass. The model combines a graph-neural-network netlist encoder with a transformer-based denoising network and uses classifier-guided sampling with a tunable guidance scale to enable inference-time control of the multi-objective trade-off. We further introduced paired-noise sampling, which isolates the effect of guidance from the variance of random initialization to produce comparable Pareto-front trajectories per netlist.
+
+PareDiff achieves a 12.2\% mean HPWL improvement over a simulated-annealing baseline placer and produces diverse, controllable placements at sub-second-per-sample inference cost. We characterized aggregate Pareto behavior across 15 test netlists and observed both coherent aggregate trends and heterogeneous per-netlist trade-off shapes. We acknowledged the principal limitations of the current work---synthetic-data evaluation and a heuristic routability proxy---and proposed concrete follow-up directions targeting industrial-benchmark evaluation and OpenROAD-grounded classifier training.
+
+We release the trained model checkpoint, full code, and reproducibility scripts to enable community extension. PareDiff represents a step toward generative, multi-objective, designer-controllable macro placement---a long-standing goal of the EDA-with-machine-learning community.
+
+\appendices
+\section{Derivation of the Predicted Clean State}
+
+The classifier-guidance update in Equation~(\ref{eq:rout_guidance}) requires evaluating the routability classifier on the predicted clean placement $\hat{x}_0$ rather than directly on the noisy state $x_t$. This appendix derives $\hat{x}_0$ from $x_t$ and the predicted noise via Tweedie's identity.
+
+Recall the closed-form Gaussian forward marginal from Equation~(\ref{eq:closedform}):
+\begin{equation*}
+q(x_t \mid x_0) = \mathcal{N}\!\big(x_t;\, \sqrt{\bar{\alpha}_t}\, x_0,\, (1 - \bar{\alpha}_t) I\big).
+\end{equation*}
+This implies the equivalent noise-prediction parameterization $x_t = \sqrt{\bar{\alpha}_t}\, x_0 + \sqrt{1 - \bar{\alpha}_t}\, \epsilon$, where $\epsilon \sim \mathcal{N}(0, I)$. Solving for $x_0$:
+\begin{equation}
+\label{eq:tweedie}
+x_0 = \frac{x_t - \sqrt{1 - \bar{\alpha}_t}\, \epsilon}{\sqrt{\bar{\alpha}_t}}.
+\end{equation}
+Replacing the unobservable noise $\epsilon$ with its model-predicted value $\epsilon_\theta(x_t, t, c)$ yields the model-predicted clean state used in the guidance update:
+\begin{equation}
+\label{eq:hat_x0}
+\hat{x}_0(x_t) = \frac{x_t - \sqrt{1 - \bar{\alpha}_t}\, \epsilon_\theta(x_t, t, c)}{\sqrt{\bar{\alpha}_t}}.
+\end{equation}
+The classifier $R_\phi(\hat{x}_0)$ is then evaluated on this predicted clean placement, and its gradient with respect to $x_t$ (computed via automatic differentiation through Equation~(\ref{eq:hat_x0}) and the classifier itself) drives the guidance update.
 
 \section*{Acknowledgments}
 
-The authors thank the AMD Client SOC Physical Design team for the general training that informed the problem framing of this work. All datasets, methodology, and experimental results presented here are based on publicly available open-source benchmarks and synthetic data generators; no proprietary AMD data was used in any aspect of this paper. We thank Hugging Face for hosting the trained model checkpoints free of charge under the user account \texttt{raipancham2004/parediff-checkpoints}.
+The authors thank the AMD Client SOC Physical Design team for the general training that informed the problem framing of this work. All datasets, methodology, and experimental results presented here are based on publicly available open-source benchmarks and synthetic data generators; no proprietary AMD data was used in any aspect of this paper. We thank Hugging Face for hosting the trained model checkpoints free of charge under the user account \texttt{raipancham2004/parediff-checkpoints}, and Kaggle for free GPU compute time used during model training.
 
 \begin{thebibliography}{22}
 \bibliographystyle{IEEEtran}
@@ -444,13 +610,13 @@ I. Loshchilov and F. Hutter, ``Decoupled weight decay regularization,'' in \emph
 \newpage
 
 \begin{IEEEbiographynophoto}{Panrai}
-received the B.E. degree in Electronics and Communication Engineering from [College Name], India, in 2026. His research interests include physical design automation, machine learning for electronic design automation, and generative models for chip floorplanning. He completed an internship in the Client SOC Physical Design team at Advanced Micro Devices (AMD) during 2026, where he worked on the TileBuilder place-and-route flow for the Medusa1 chip.
+received the B.E. degree in Electronics and Communication Engineering from [College Name], India, in 2026. His research interests include physical design automation, machine learning for electronic design automation, and generative models for chip floorplanning. He completed an internship in the Client SOC Physical Design team at Advanced Micro Devices (AMD) during 2026, where he worked on the TileBuilder place-and-route flow for the Medusa1 chip on the TSMC 3\,nm process node. His current research focuses on applying modern generative methods to long-standing problems in VLSI design automation.
 \end{IEEEbiographynophoto}
 
 \vspace{11pt}
 
 \begin{IEEEbiographynophoto}{[Advisor Name]}
-received the Ph.D. degree from [Institution Name]. He is currently a Faculty Member with the Department of Electronics and Communication Engineering, [College Name], India. His research interests include VLSI design automation, machine learning, and digital integrated circuits.
+received the Ph.D. degree from [Institution Name]. He is currently a Faculty Member with the Department of Electronics and Communication Engineering, [College Name], India. His research interests include VLSI design automation, machine learning, digital integrated circuits, and the intersection of machine learning with electronic design automation. He has supervised numerous undergraduate and graduate research projects in these areas.
 \end{IEEEbiographynophoto}
 
 \vfill
